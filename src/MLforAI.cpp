@@ -1,5 +1,8 @@
 #include "MLforAI.h"
 #include "battleship.h"
+#if defined(USE_CUDA)
+#include "mc_cuda.h"
+#endif
 
 using namespace std;
 
@@ -641,69 +644,82 @@ void monteCarloProbabilities(const char boardView[NUM_ROWS][NUM_COLS],
     int counts[NUM_ROWS][NUM_COLS] = {0};
     srand(static_cast<unsigned int>(time(nullptr)));
 
-    // Precompute list of ship sizes to place
-    vector<int> ships;
-    for (int i = 0; i < NUM_SHIPS; ++i) if (remaining[i] > 0) ships.push_back(remaining[i]);
-    if (ships.empty()) {
-        for (int r = 0; r < NUM_ROWS; ++r)
-            for (int c = 0; c < NUM_COLS; ++c) outProb[r][c] = 0.0;
-        return;
-    }
+    // If CUDA is available at runtime, prefer GPU path (mc_cuda provides cudaAvailable())
+    extern int cudaAvailable();
+    extern void monteCarloProbabilitiesGPU(const char boardView[NUM_ROWS][NUM_COLS], const int remaining[NUM_SHIPS], int iterations, int outCounts[NUM_ROWS * NUM_COLS]);
+    if (cudaAvailable()) {
+        int flatCounts[NUM_ROWS * NUM_COLS];
+        for (int i = 0; i < NUM_ROWS * NUM_COLS; ++i) flatCounts[i] = 0;
+        monteCarloProbabilitiesGPU(boardView, remaining, iterations, flatCounts);
+        for (int r = 0; r < NUM_ROWS; ++r) for (int c = 0; c < NUM_COLS; ++c) counts[r][c] = flatCounts[r*NUM_COLS + c];
+        // fall through to normalization below
+    } else {
 
-    for (int it = 0; it < iterations; ++it) {
-        // try to place all ships randomly; if fail, skip sample
-        char sample[NUM_ROWS][NUM_COLS];
-        for (int r = 0; r < NUM_ROWS; ++r)
-            for (int c = 0; c < NUM_COLS; ++c) sample[r][c] = boardView[r][c];
-
-        bool ok = true;
-        for (int s = 0; s < (int)ships.size(); ++s) {
-            int len = ships[s];
-            bool placed = false;
-            for (int attempt = 0; attempt < 200 && !placed; ++attempt) {
-                bool horiz = rand() % 2;
-                int r = rand() % NUM_ROWS;
-                int c = rand() % NUM_COLS;
-                if (!shipFitsAt(sample, r, c, len, horiz)) continue;
-                // ensure doesn't overwrite known misses or hits in inconsistent way
-                bool conflict = false;
-                for (int k = 0; k < len; ++k) {
-                    int nr = r + (horiz ? 0 : k);
-                    int nc = c + (horiz ? k : 0);
-                    if (boardView[nr][nc] == 'm') { conflict = true; break; }
-                }
-                if (conflict) continue;
-                // place with symbol 'S'
-                for (int k = 0; k < len; ++k) {
-                    int nr = r + (horiz ? 0 : k);
-                    int nc = c + (horiz ? k : 0);
-                    sample[nr][nc] = 'S';
-                }
-                placed = true;
-            }
-            if (!placed) { ok = false; break; }
+        // Precompute list of ship sizes to place
+        vector<int> ships;
+        for (int i = 0; i < NUM_SHIPS; ++i) if (remaining[i] > 0) ships.push_back(remaining[i]);
+        if (ships.empty()) {
+            for (int r = 0; r < NUM_ROWS; ++r)
+                for (int c = 0; c < NUM_COLS; ++c) outProb[r][c] = 0.0;
+            return;
         }
-        if (!ok) continue;
 
-        // accumulate counts for unknown cells
+        for (int it = 0; it < iterations; ++it) {
+            // try to place all ships randomly; if fail, skip sample
+            char sample[NUM_ROWS][NUM_COLS];
+            for (int r = 0; r < NUM_ROWS; ++r)
+                for (int c = 0; c < NUM_COLS; ++c) sample[r][c] = boardView[r][c];
+
+            bool ok = true;
+            for (int s = 0; s < (int)ships.size(); ++s) {
+                int len = ships[s];
+                bool placed = false;
+                for (int attempt = 0; attempt < 200 && !placed; ++attempt) {
+                    bool horiz = rand() % 2;
+                    int r = rand() % NUM_ROWS;
+                    int c = rand() % NUM_COLS;
+                    if (!shipFitsAt(sample, r, c, len, horiz)) continue;
+                    // ensure doesn't overwrite known misses or hits in inconsistent way
+                    bool conflict = false;
+                    for (int k = 0; k < len; ++k) {
+                        int nr = r + (horiz ? 0 : k);
+                        int nc = c + (horiz ? k : 0);
+                        if (boardView[nr][nc] == 'm') { conflict = true; break; }
+                    }
+                    if (conflict) continue;
+                    // place with symbol 'S'
+                    for (int k = 0; k < len; ++k) {
+                        int nr = r + (horiz ? 0 : k);
+                        int nc = c + (horiz ? k : 0);
+                        sample[nr][nc] = 'S';
+                    }
+                    placed = true;
+                }
+                if (!placed) { ok = false; break; }
+            }
+            if (!ok) continue;
+
+            // accumulate counts for unknown cells
+            for (int r = 0; r < NUM_ROWS; ++r)
+                for (int c = 0; c < NUM_COLS; ++c)
+                    if (sample[r][c] == 'S') counts[r][c]++;
+        }
+
+        int maxCount = 0;
         for (int r = 0; r < NUM_ROWS; ++r)
             for (int c = 0; c < NUM_COLS; ++c)
-                if (sample[r][c] == 'S') counts[r][c]++;
-    }
+                if (counts[r][c] > maxCount) maxCount = counts[r][c];
 
-    int maxCount = 0;
-    for (int r = 0; r < NUM_ROWS; ++r)
-        for (int c = 0; c < NUM_COLS; ++c)
-            if (counts[r][c] > maxCount) maxCount = counts[r][c];
-
-    if (maxCount == 0) {
+        if (maxCount == 0) {
+            for (int r = 0; r < NUM_ROWS; ++r)
+                for (int c = 0; c < NUM_COLS; ++c) outProb[r][c] = 0.0;
+            return;
+        }
         for (int r = 0; r < NUM_ROWS; ++r)
-            for (int c = 0; c < NUM_COLS; ++c) outProb[r][c] = 0.0;
-        return;
+            for (int c = 0; c < NUM_COLS; ++c)
+                outProb[r][c] = static_cast<double>(counts[r][c]) / static_cast<double>(maxCount);
     }
-    for (int r = 0; r < NUM_ROWS; ++r)
-        for (int c = 0; c < NUM_COLS; ++c)
-            outProb[r][c] = static_cast<double>(counts[r][c]) / static_cast<double>(maxCount);
+    return;
 }
 
 /**

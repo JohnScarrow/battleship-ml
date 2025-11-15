@@ -39,6 +39,7 @@ int main(int argc, char** argv) {
 
     int totalGames = 500; // default per combo
     int threads = 1;
+    int online = 0;
     string alphaSpec, placeSpec, adjSpec, mcSpec;
 
     // Simple CLI: key=value pairs
@@ -53,6 +54,7 @@ int main(int argc, char** argv) {
         else if (k=="place") placeSpec = v;
         else if (k=="adj") adjSpec = v;
         else if (k=="mc") mcSpec = v;
+        else if (k=="online") online = stoi(v);
     }
 
     // Default ranges
@@ -61,6 +63,64 @@ int main(int argc, char** argv) {
     auto adjs = parseRange(adjSpec, 0.2, 0.2, 0.6);
     auto mcs = parseRange(mcSpec, 0.0, 0.5, 0.5);
 
+    if (online) {
+        // Online learning mode: update weights after each game
+        cout << "[Online learning mode enabled]" << endl;
+        // Start with initial weights (first in range)
+        AIWeights w = gAIWeights;
+        w.globalAlphaEarly = alphas[0];
+        w.placementHitMultiplier = places[0];
+        w.adjHitBonus = adjs[0];
+        w.mcBlendRatio = mcs[0];
+        setAIWeights(w);
+
+        double lr = 0.05; // learning rate
+        double bestAvg = 1e9;
+        for (int g = 0; g < totalGames; ++g) {
+            Tournament t;
+            t.start(3, 1);
+            while (!t.done()) t.tick();
+            double avgShots = 0.5 * (t.shotsP1Accum + t.shotsP2Accum);
+            // Simple reward: if avgShots < bestAvg, reinforce weights
+            if (avgShots < bestAvg) {
+                bestAvg = avgShots;
+                // Reward: nudge weights in current direction
+                w.globalAlphaEarly += lr * ((rand()%2) ? 1 : -1) * 0.01;
+                w.placementHitMultiplier += lr * ((rand()%2) ? 1 : -1) * 0.05;
+                w.adjHitBonus += lr * ((rand()%2) ? 1 : -1) * 0.02;
+                w.mcBlendRatio += lr * ((rand()%2) ? 1 : -1) * 0.01;
+            } else {
+                // Penalize: nudge weights in opposite direction
+                w.globalAlphaEarly -= lr * ((rand()%2) ? 1 : -1) * 0.01;
+                w.placementHitMultiplier -= lr * ((rand()%2) ? 1 : -1) * 0.05;
+                w.adjHitBonus -= lr * ((rand()%2) ? 1 : -1) * 0.02;
+                w.mcBlendRatio -= lr * ((rand()%2) ? 1 : -1) * 0.01;
+            }
+            // Clamp weights to reasonable ranges
+            w.globalAlphaEarly = max(0.5, min(0.9, w.globalAlphaEarly));
+            w.placementHitMultiplier = max(0.5, min(3.0, w.placementHitMultiplier));
+            w.adjHitBonus = max(0.0, min(1.0, w.adjHitBonus));
+            w.mcBlendRatio = max(0.0, min(1.0, w.mcBlendRatio));
+            setAIWeights(w);
+            if ((g+1) % 50 == 0) {
+                cout << "After " << (g+1) << " games: alpha=" << w.globalAlphaEarly
+                     << ", place=" << w.placementHitMultiplier
+                     << ", adj=" << w.adjHitBonus
+                     << ", mc=" << w.mcBlendRatio
+                     << ", bestAvgShots=" << bestAvg << endl;
+            }
+        }
+        cout << "Final weights after online learning:" << endl;
+        cout << "alphaEarly,placementHitMultiplier,adjHitBonus,mcBlendRatio" << endl;
+        cout << fixed << setprecision(4)
+             << w.globalAlphaEarly << ","
+             << w.placementHitMultiplier << ","
+             << w.adjHitBonus << ","
+             << w.mcBlendRatio << endl;
+        return 0;
+    }
+
+    // Default: sweep mode
     cout << "alphaEarly,placementHitMultiplier,adjHitBonus,mcBlendRatio,games,threads,p1_avg_shots,p2_avg_shots" << endl;
 
     for (double alpha : alphas) {

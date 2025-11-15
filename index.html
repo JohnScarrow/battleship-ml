@@ -60,6 +60,30 @@
             <label><input type="checkbox" id="stepMode"/> Step Mode</label>
               <button id="step" disabled>Step</button>
               <button id="resume" disabled>Resume</button>
+          <label>Speed (ticks/sec): <span id="speedVal">60</span></label>
+          <input id="speedSlider" type="range" min="1" max="200" value="60" />
+
+          <hr />
+          <strong>AI Quick Tuning</strong>
+          <label>globalAlphaEarly: <span id="alphaVal">0.75</span></label>
+          <input id="alphaSlider" type="range" min="0.40" max="0.95" step="0.01" value="0.75" />
+          <label>placementHitMultiplier: <span id="placeVal">2.00</span></label>
+          <input id="placeSlider" type="range" min="0.50" max="3.00" step="0.05" value="2.00" />
+          <label>adjHitBonus: <span id="adjVal">0.40</span></label>
+          <input id="adjSlider" type="range" min="0.00" max="1.00" step="0.01" value="0.40" />
+          <label>mcBlendRatio: <span id="mcVal">0.50</span></label>
+          <input id="mcSlider" type="range" min="0.00" max="1.00" step="0.01" value="0.50" />
+          <button id="applyAI">Apply AI Weights</button>
+          <button id="quickTrial">Quick 20-game Trial</button>
+          <button id="applyBest">Use Best from tuner_output.csv</button>
+          <label>Presets</label>
+          <select id="presetSel">
+            <option value="default">Default</option>
+            <option value="fast-center">Fast-Center</option>
+            <option value="tuned-best">Tuned-Best</option>
+          </select>
+          <button id="savePreset">Save Preset</button>
+          <div id="tunerSummary" style="margin-top:8px; font-size:12px"></div>
           <button id="start">Start</button>
           <div class="legend">
             <div><div class="box" style="background:#4caf50"></div> Hit</div>
@@ -96,6 +120,8 @@
       const snap2 = mod.cwrap('getPlayer2BoardSnapshot', 'number', []);
       const heat1 = mod.cwrap('getPlayer1HeatmapSnapshot', 'number', []);
       const heat2 = mod.cwrap('getPlayer2HeatmapSnapshot', 'number', []);
+      const setAIWeights = mod.cwrap('setAIWeightsFromArray', null, ['number']);
+      const getAIWeights = mod.cwrap('getAIWeightsToArray', null, ['number']);
 
       const canvas1 = document.getElementById('board1');
       const canvas2 = document.getElementById('board2');
@@ -105,6 +131,23 @@
       const startBtn = document.getElementById('start');
       const modeSel = document.getElementById('mode');
       const gamesInput = document.getElementById('games');
+      const speedSlider = document.getElementById('speedSlider');
+      const speedVal = document.getElementById('speedVal');
+
+      const alphaSlider = document.getElementById('alphaSlider');
+      const alphaVal = document.getElementById('alphaVal');
+      const placeSlider = document.getElementById('placeSlider');
+      const placeVal = document.getElementById('placeVal');
+      const adjSlider = document.getElementById('adjSlider');
+      const adjVal = document.getElementById('adjVal');
+      const mcSlider = document.getElementById('mcSlider');
+      const mcVal = document.getElementById('mcVal');
+      const applyAIBtn = document.getElementById('applyAI');
+      const quickTrialBtn = document.getElementById('quickTrial');
+      const applyBestBtn = document.getElementById('applyBest');
+      const presetSel = document.getElementById('presetSel');
+      const savePresetBtn = document.getElementById('savePreset');
+      const tunerSummary = document.getElementById('tunerSummary');
 
       let p1Stats = { hits: 0, misses: 0, total: 0 };
       let p2Stats = { hits: 0, misses: 0, total: 0 };
@@ -226,7 +269,10 @@
       let currentTotalGames = 0;
       function warGamesRamp(totalGames) {
         // If user requests many games, cap final rate to avoid browser lag
-        const finalRate = totalGames >= 30 ? 30 : 60;
+        // Allow speed override via slider
+        const sliderRate = Number(speedSlider.value) || 60;
+        speedVal.textContent = sliderRate;
+        const finalRate = Math.min(sliderRate, totalGames >= 50 ? 30 : 60);
         let phases = [
           { rate: 2,  durationMs: 3000 },  // slow to savor
           { rate: 8,  durationMs: 3000 },
@@ -277,6 +323,13 @@
         resumeBtn.disabled = !stepModeEnabled;
       };
 
+      // Slider displays
+      speedSlider.oninput = () => { speedVal.textContent = speedSlider.value; };
+      alphaSlider.oninput = () => { alphaVal.textContent = parseFloat(alphaSlider.value).toFixed(2); };
+      placeSlider.oninput = () => { placeVal.textContent = parseFloat(placeSlider.value).toFixed(2); };
+      adjSlider.oninput = () => { adjVal.textContent = parseFloat(adjSlider.value).toFixed(2); };
+      mcSlider.oninput = () => { mcVal.textContent = parseFloat(mcSlider.value).toFixed(2); };
+
       startBtn.onclick = () => {
         try {
           logEl.textContent = '';
@@ -319,6 +372,213 @@
           appendLog('[Resumed autoplay]');
         }
       };
+
+      // Build an array of 16 floats matching AIWeights layout then call WASM setter
+      function applyAIWeightsFromUI() {
+        if (!mod || !setAIWeights || !mod._malloc) {
+          appendLog('[WASM not ready for setting AI weights]');
+          return;
+        }
+        // Read current weights into buffer to preserve unchanged fields
+        const buf = mod._malloc(16 * 4);
+        try {
+          getAIWeights(buf);
+          const view = new Float32Array(mod.HEAPF32.buffer, buf, 16);
+          // Update fields we allow editing
+          view[0] = parseFloat(alphaSlider.value); // globalAlphaEarly
+          // leave globalAlphaLate as-is
+          view[6] = parseFloat(adjSlider.value);   // adjHitBonus
+          view[12] = parseFloat(placeSlider.value); // placementHitMultiplier
+          view[14] = parseFloat(mcSlider.value);   // mcBlendRatio
+          // call WASM setter
+          setAIWeights(buf);
+          appendLog('[AI weights applied]');
+        } finally {
+          mod._free(buf);
+        }
+      }
+
+      applyAIBtn.onclick = () => {
+        applyAIWeightsFromUI();
+      };
+
+      // Quick trial: run a 20-game tournament asynchronously and report final CSV-like message
+      quickTrialBtn.onclick = async () => {
+        try {
+          appendLog('[Starting quick 20-game trial]');
+          start(3, 20);
+          // Run ticks in small batches to avoid locking UI
+          let lastMsg = null;
+          while (!done()) {
+            // run a few ticks per paint
+            for (let i = 0; i < 20 && !done(); ++i) {
+              const msg = tick();
+              if (msg) lastMsg = msg;
+            }
+            renderBoard();
+            await new Promise(r => setTimeout(r, 1));
+          }
+          // one final tick to obtain end message if not already
+          const finalMsg = lastMsg || tick();
+          appendLog('[Quick trial complete] ' + (finalMsg || ''));
+          // try to parse P1 avg shots from final message
+          const m = /P1 avg shots:\s*([0-9]+\.?[0-9]*)/.exec(finalMsg || '');
+          if (m) appendLog('[P1 avg shots] ' + m[1]);
+        } catch (err) {
+          appendLog('[Quick trial error] ' + err.message);
+        }
+      };
+
+      // Fetch tuner_output.csv, pick best row by P1 avg, and apply weights
+      applyBestBtn.onclick = async () => {
+        try {
+          appendLog('[Loading tuner_output.csv]');
+          const resp = await fetch('tuner_output.csv');
+          if (!resp.ok) { appendLog('[Failed to load tuner_output.csv]'); return; }
+          const txt = await resp.text();
+          const lines = txt.split('\n').map(l => l.trim()).filter(l => l.length);
+          if (lines.length <= 1) { appendLog('[No data in tuner_output.csv]'); return; }
+          const header = lines[0].split(',');
+          let best = null; let bestVal = Infinity;
+          for (let i = 1; i < lines.length; ++i) {
+            const cols = lines[i].split(',');
+            if (cols.length < 7) continue;
+            const p1 = parseFloat(cols[6]);
+            if (!isFinite(p1)) continue;
+            if (p1 < bestVal) { bestVal = p1; best = cols; }
+          }
+          if (!best) { appendLog('[No valid rows found]'); return; }
+          // columns: alphaEarly,placementHitMultiplier,adjHitBonus,mcBlendRatio,games,threads,p1_avg_shots,p2_avg_shots
+          const alpha = parseFloat(best[0]);
+          const place = parseFloat(best[1]);
+          const adj = parseFloat(best[2]);
+          const mc = parseFloat(best[3]);
+          // apply to UI
+          alphaSlider.value = alpha; alphaVal.textContent = alpha.toFixed(2);
+          placeSlider.value = place; placeVal.textContent = place.toFixed(2);
+          adjSlider.value = adj; adjVal.textContent = adj.toFixed(2);
+          mcSlider.value = mc; mcVal.textContent = mc.toFixed(2);
+          applyAIWeightsFromUI();
+          appendLog('[Applied best tuner weights — running quick confirmation]');
+          quickTrialBtn.click();
+        } catch (err) {
+          appendLog('[Error applying best weights] ' + err.message);
+        }
+      };
+
+      // Preset handling with localStorage persistence
+      const PRESET_KEY = 'battleship_presets_v1';
+      // Default built-in presets
+      const builtinPresets = {
+        'default': null,
+        'fast-center': { globalAlphaEarly: 0.7, placementHitMultiplier: 1.5, adjHitBonus: 0.3, mcBlendRatio: 0.0 },
+        'tuned-best': { globalAlphaEarly: 0.8, placementHitMultiplier: 2.0, adjHitBonus: 0.2, mcBlendRatio: 0.5 }
+      };
+
+      // Load presets from localStorage (merge with builtins)
+      let presets = Object.assign({}, builtinPresets);
+      try {
+        const raw = localStorage.getItem(PRESET_KEY);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed && typeof parsed === 'object') presets = Object.assign({}, presets, parsed);
+        }
+      } catch (err) {
+        console.warn('Failed to load presets from localStorage:', err);
+      }
+
+      // Populate preset selector
+      function refreshPresetOptions() {
+        // clear existing (preserve first three builtin options ordering)
+        presetSel.innerHTML = '';
+        for (const k of Object.keys(presets)) {
+          const opt = document.createElement('option'); opt.value = k; opt.textContent = k; presetSel.appendChild(opt);
+        }
+      }
+      refreshPresetOptions();
+
+      presetSel.onchange = () => {
+        const k = presetSel.value;
+        if (k && presets[k]) {
+          const p = presets[k];
+          if (p.globalAlphaEarly !== undefined) { alphaSlider.value = p.globalAlphaEarly; alphaVal.textContent = p.globalAlphaEarly.toFixed(2); }
+          if (p.placementHitMultiplier !== undefined) { placeSlider.value = p.placementHitMultiplier; placeVal.textContent = p.placementHitMultiplier.toFixed(2); }
+          if (p.adjHitBonus !== undefined) { adjSlider.value = p.adjHitBonus; adjVal.textContent = p.adjHitBonus.toFixed(2); }
+          if (p.mcBlendRatio !== undefined) { mcSlider.value = p.mcBlendRatio; mcVal.textContent = p.mcBlendRatio.toFixed(2); }
+        }
+      };
+
+      savePresetBtn.onclick = () => {
+        const name = prompt('Preset name:');
+        if (!name) return;
+        presets[name] = {
+          globalAlphaEarly: parseFloat(alphaSlider.value),
+          placementHitMultiplier: parseFloat(placeSlider.value),
+          adjHitBonus: parseFloat(adjSlider.value),
+          mcBlendRatio: parseFloat(mcSlider.value)
+        };
+        try {
+          localStorage.setItem(PRESET_KEY, JSON.stringify(presets));
+          refreshPresetOptions();
+          presetSel.value = name;
+          appendLog('[Saved preset: ' + name + ']');
+        } catch (err) {
+          appendLog('[Failed to save preset: ' + err.message + ']');
+        }
+      };
+
+      // parseConfirmCSV: parse tuner_1000_confirm.csv and render summary with clickable best row
+      let confirmBest = null;
+      async function parseConfirmCSV() {
+        try {
+          const resp = await fetch('tuner_1000_confirm.csv');
+          if (!resp.ok) { tunerSummary.textContent = 'No confirm file.'; return; }
+          const txt = await resp.text();
+          const lines = txt.split('\n').map(l=>l.trim()).filter(l=>l.length);
+          if (lines.length <= 1) { tunerSummary.textContent = 'No data in confirm CSV.'; return; }
+          let best = null, worst = null, sum = 0, count=0;
+          for (let i = 1; i < lines.length; ++i) {
+            const cols = lines[i].split(','); if (cols.length < 7) continue;
+            const p1 = parseFloat(cols[6]);
+            if (!isFinite(p1)) continue;
+            sum += p1; count++;
+            if (!best || p1 < best.p1) best = { p1, cols };
+            if (!worst || p1 > worst.p1) worst = { p1, cols };
+          }
+          if (count === 0) { tunerSummary.textContent = 'No numeric data in confirm CSV.'; return; }
+          const avg = sum / count;
+          confirmBest = best;
+          // Render summary and make the Best line clickable
+          tunerSummary.innerHTML = '';
+          const info = document.createElement('div'); info.textContent = `Confirm CSV: rows=${count} avgP1=${avg.toFixed(3)}`;
+          const bestDiv = document.createElement('div');
+          bestDiv.style.cursor = 'pointer';
+          bestDiv.title = 'Click to apply this best config and run a quick trial';
+          bestDiv.innerHTML = `Best: <strong>${best.p1.toFixed(3)}</strong> &nbsp; Config: ${best.cols.slice(0,4).join(',')}`;
+          bestDiv.onclick = () => {
+            if (!confirmBest) return;
+            const cols = confirmBest.cols;
+            const alpha = parseFloat(cols[0]);
+            const place = parseFloat(cols[1]);
+            const adj = parseFloat(cols[2]);
+            const mc = parseFloat(cols[3]);
+            alphaSlider.value = alpha; alphaVal.textContent = alpha.toFixed(2);
+            placeSlider.value = place; placeVal.textContent = place.toFixed(2);
+            adjSlider.value = adj; adjVal.textContent = adj.toFixed(2);
+            mcSlider.value = mc; mcVal.textContent = mc.toFixed(2);
+            applyAIWeightsFromUI();
+            appendLog('[Applied confirm-best weights — running quick confirmation]');
+            quickTrialBtn.click();
+          };
+          const worstDiv = document.createElement('div'); worstDiv.textContent = `Worst: ${worst.p1.toFixed(3)}   Config: ${worst.cols.slice(0,4).join(',')}`;
+          tunerSummary.appendChild(info);
+          tunerSummary.appendChild(bestDiv);
+          tunerSummary.appendChild(worstDiv);
+        } catch (err) { tunerSummary.textContent = 'Error reading confirm CSV: '+err.message; }
+      }
+
+      // Try parsing on load
+      parseConfirmCSV();
       
       // Draw initial empty boards to show canvas is working
       function drawInitialBoards() {

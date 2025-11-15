@@ -43,3 +43,4 @@
 
 #User-specific files
 *.log
+logs/

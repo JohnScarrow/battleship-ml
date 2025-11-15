@@ -609,6 +609,47 @@
       // Try parsing on load
       parseConfirmCSV();
       
+      // Autoplay / muted query-param handling
+      (function() {
+        function getParam(name) {
+          try { return new URLSearchParams(window.location.search).get(name); } catch (e) { return null; }
+        }
+        const autoplay = getParam('autoplay') === '1';
+        const muted = getParam('muted') === '1';
+
+        function applyMuted() {
+          try {
+            // Mute any audio elements and expose a flag for other code
+            document.querySelectorAll('audio').forEach(a => a.muted = true);
+            window._battleship_demo_muted = true;
+          } catch (e) { console.warn('mute failed', e); }
+        }
+
+        function startIfNeeded() {
+          if (muted) applyMuted();
+          if (!autoplay) return;
+          try {
+            // Use same startup logic as the Start button
+            logEl.textContent = '';
+            const mode = Number(modeSel.value);
+            const games = Number(gamesInput.value);
+            currentTotalGames = games;
+            appendLog(`[Tournament started: mode=${mode}, games=${games}] (autoplay)`);
+            start(mode, games);
+            renderBoard();
+            if (!stepModeEnabled) warGamesRamp(games);
+          } catch (e) {
+            console.warn('autoplay start failed', e);
+          }
+        }
+
+        if (document.readyState === 'loading') {
+          document.addEventListener('DOMContentLoaded', startIfNeeded);
+        } else {
+          startIfNeeded();
+        }
+      })();
+      
       // Draw initial empty boards to show canvas is working
       function drawInitialBoards() {
         [ctx1, ctx2].forEach(ctx => {

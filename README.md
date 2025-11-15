@@ -103,3 +103,20 @@ If no GPU is available, the binary will fall back to CPU mode automatically.
 - 🔴 **Red** = Miss
 - 🔵 **Blue gradient** = AI probability heatmap (darker = higher probability)
 
+
+## Autoplay & Muted (URL parameters)
+
+The web demo supports two query parameters that can be appended to the demo URL to control automatic start and audio muting when embedded or loaded remotely.
+
+- `autoplay=1` — automatically starts the tournament using the current UI settings (mode, games, etc.). This behaves the same as clicking the **Start** button and will begin the animation loop unless Step Mode is enabled.
+- `muted=1` — mutes any audio elements on the page (if present) and sets a global flag (`window._battleship_demo_muted = true`) for other scripts to consult.
+
+Examples:
+
+```
+http://localhost:8000/index.html?autoplay=1
+http://localhost:8000/index.html?autoplay=1&muted=1
+```
+
+When embedding the demo in an iframe (for example, from a portfolio page), include `?autoplay=1&muted=1` in the iframe `src` to load and autoplay safely.
+

@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+mkdir -p dist
+emcc \
+  src/battleship.cpp \
+  src/MLforAI.cpp \
+  src/Tournament.cpp \
+  src/wasm_exports.cpp \
+  -O2 -std=c++17 \
+  -s WASM=1 \
+  -s EXPORTED_RUNTIME_METHODS='["ccall","cwrap"]' \
+  -s MODULARIZE=1 \
+  -s EXPORT_ES6=1 \
+  -s ALLOW_MEMORY_GROWTH=1 \
+  -o dist/battleship.js
+
+echo "Build complete: dist/battleship.js + dist/battleship.wasm"

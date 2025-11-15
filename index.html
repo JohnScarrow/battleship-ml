@@ -1,0 +1,127 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Battleship ML (WASM)</title>
+    <style>
+      body { font-family: monospace; background:#0b0e12; color:#e6e6e6; margin:0; padding:20px; }
+      #ui { display:flex; gap:20px; align-items:flex-start; }
+      canvas { border:1px solid #333; background:#0b0e12; }
+      pre { max-height:400px; overflow:auto; background:#0a0d11; padding:12px; border:1px solid #333; }
+      label, input, button { display:block; margin-top:8px; }
+    </style>
+  </head>
+  <body>
+    <h1>Battleship ML (C++ → WebAssembly)</h1>
+    <div id="ui">
+      <div>
+        <canvas id="board" width="500" height="500"></canvas>
+        <div>
+          <label>Mode</label>
+          <select id="mode">
+            <option value="3">Computer vs Computer</option>
+            <option value="2">Player vs Computer (AI auto)</option>
+            <option value="1">Player vs Player (AI auto)</option>
+          </select>
+          <label>Total games</label>
+          <input id="games" type="number" min="1" value="20"/>
+          <button id="start">Start</button>
+        </div>
+      </div>
+      <pre id="log"></pre>
+    </div>
+
+    <script type="module">
+      import createModule from "./dist/battleship.js";
+
+      const mod = await createModule({
+        print: t => console.log(t),
+        printErr: t => console.error(t),
+      });
+
+      const start = mod.cwrap('startTournament', null, ['number','number']);
+      const tick  = mod.cwrap('tickTournament', 'string', []);
+      const done  = mod.cwrap('isTournamentDone', 'number', []);
+      const snap  = mod.cwrap('getBoardSnapshot', 'number', []);
+      const heat  = mod.cwrap('getHeatmapSnapshot', 'number', []);
+
+      const canvas = document.getElementById('board');
+      const ctx = canvas.getContext('2d');
+      const logEl = document.getElementById('log');
+      const startBtn = document.getElementById('start');
+      const modeSel = document.getElementById('mode');
+      const gamesInput = document.getElementById('games');
+
+      function renderBoard() {
+        const ptr = snap();
+        const hptr = heat();
+        const data = new Float32Array(mod.HEAPF32.buffer, ptr, 100);
+        const hdata = new Float32Array(mod.HEAPF32.buffer, hptr, 100);
+        const size = 10, cell = canvas.width / size;
+        ctx.fillStyle = '#0b0e12'; ctx.fillRect(0,0,canvas.width,canvas.height);
+        for (let r=0; r<size; r++) for (let c=0; c<size; c++) {
+          const idx = r*size+c;
+          const v = data[idx];
+          const hv = hdata[idx];
+          // Heatmap overlay for untouched cells
+          if (v === 0 && hv > 0) {
+            const alpha = 0.12 + 0.55 * hv; // base + scaled probability
+            ctx.fillStyle = `rgba(0,140,255,${alpha.toFixed(3)})`;
+            ctx.fillRect(c*cell, r*cell, cell, cell);
+          }
+          if (v === 1) { ctx.fillStyle = '#4caf50'; ctx.fillRect(c*cell, r*cell, cell, cell); } // hit
+          else if (v === -1) { ctx.fillStyle = '#e53935'; ctx.fillRect(c*cell, r*cell, cell, cell); } // miss
+          ctx.strokeStyle = '#3a3f47'; ctx.strokeRect(c*cell, r*cell, cell, cell);
+        }
+      }
+
+      function appendLog(line) {
+        if (!line) return;
+        logEl.textContent += line + "\n";
+        logEl.scrollTop = logEl.scrollHeight;
+      }
+
+      function warGamesRamp() {
+        let phases = [
+          { rate: 2,  durationMs: 4000 },  // slow to savor
+          { rate: 8,  durationMs: 4000 },
+          { rate: 20, durationMs: 4000 },
+          { rate: 60, durationMs: 0 },     // max speed until done
+        ];
+        let phaseIndex = 0, lastSwitch = performance.now();
+        let accumulator = 0, last = performance.now();
+
+        function loop(now) {
+          const dt = (now - last) / 1000.0; last = now;
+          const phase = phases[phaseIndex] || phases[phases.length-1];
+          const interval = 1.0 / phase.rate;
+          accumulator += dt;
+          while (accumulator >= interval) {
+            accumulator -= interval;
+            const msg = tick();
+            appendLog(msg);
+            renderBoard();
+            if (done()) return;
+          }
+          if (phase.durationMs > 0 && now - lastSwitch > phase.durationMs) {
+            phaseIndex++; lastSwitch = now;
+            const nextRate = phases[phaseIndex]?.rate ?? phases[phaseIndex-1].rate;
+            appendLog(`[Speed increased to ${nextRate} ticks/sec]`);
+          }
+          requestAnimationFrame(loop);
+        }
+        requestAnimationFrame(loop);
+      }
+
+      startBtn.onclick = () => {
+        logEl.textContent = '';
+        const mode = Number(modeSel.value);
+        const games = Number(gamesInput.value);
+        start(mode, games);
+        appendLog(`[Tournament started: mode=${mode}, games=${games}]`);
+        renderBoard();
+        warGamesRamp();
+      };
+    </script>
+  </body>
+</html>

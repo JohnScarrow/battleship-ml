@@ -26,7 +26,7 @@ struct RoundResult {
 RoundResult playOneRound(int mode, int round) {
     RoundResult result;
 
-    ofstream logFile("battleship.log", ios::app); // append each round
+    // file logging removed for simpler native runs (WASM-compatible)
 
     PlayerType player1Type, player2Type;
     if (mode == 1) { player1Type = HUMAN; player2Type = HUMAN; }
@@ -112,8 +112,16 @@ RoundResult playOneRound(int mode, int round) {
         currentStats.hitMissRatio = currentStats.totalShots ?
             (100.0 * currentStats.hits / currentStats.totalShots) : 0.0;
         
-        computeProbabilities(liveHits, liveMisses, liveProb);
-        outputCurrentMove(logFile, currentName, row, col, result, sunk);
+        // Build view from live hits/misses and compute placement-based probabilities
+        char view[NUM_ROWS][NUM_COLS];
+        for (int r = 0; r < NUM_ROWS; ++r) {
+            for (int c = 0; c < NUM_COLS; ++c) {
+                if (liveHits[r][c] > 0) view[r][c] = 'X';
+                else if (liveMisses[r][c] > 0) view[r][c] = 'm';
+                else view[r][c] = '-';
+            }
+        }
+        computePlacementProbabilities(view, targetShipSizes, liveProb);
 
         if (currentType == COMPUTER) {
             TargetState &ts = (turn == 0 ? p1Target : p2Target);
@@ -125,16 +133,13 @@ RoundResult playOneRound(int mode, int round) {
             currentStats.won = true;
             (turn == 0 ? computerStats : playerStats).won = false;
             cout << currentName << " Wins Round " << round << "!\n";
-            logFile << "\n" << currentName << " wins round " << round << "\n";
             break;
         }
         turnCount++;
         turn = 1 - turn;
     }
 
-    outputStats(logFile, playerStats, "Player1");
-    outputStats(logFile, computerStats, "Player2");
-    logFile.close();
+    // outputStats/logging removed for simpler native runs
 
     // Fill in result using Option 2 (direct cast from bool to int)
     result.p1Wins = static_cast<int>(playerStats.won);

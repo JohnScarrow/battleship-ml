@@ -5,6 +5,10 @@
 
 static float BOARD_BUFFER[100]; // reused for snapshots
 static float HEATMAP_BUFFER[100]; // reused for heatmap snapshots
+static float BOARD1_BUFFER[100]; // Player 1's board
+static float BOARD2_BUFFER[100]; // Player 2's board
+static float HEAT1_BUFFER[100];  // Player 1's heatmap
+static float HEAT2_BUFFER[100];  // Player 2's heatmap
 
 void RoundState::reset(int mode_, int round_) {
     mode = mode_;
@@ -46,7 +50,12 @@ void RoundState::reset(int mode_, int round_) {
     // Learn from prior log if available (native runs only; in browser omit file I/O)
     // learnFromLog("battleship.log", hitCount, missCount);
 
-    computeProbabilities(hitCount, missCount, hitProb);
+    // Initialize global hit probability using placement enumeration on a blank view
+    char initialView[NUM_ROWS][NUM_COLS];
+    for (int r = 0; r < NUM_ROWS; ++r)
+        for (int c = 0; c < NUM_COLS; ++c)
+            initialView[r][c] = '-';
+    computePlacementProbabilities(initialView, computerShipSizes, hitProb);
 
     // Who starts
     turn = selectWhoStartsFirst();
@@ -107,7 +116,26 @@ const char* RoundState::tick() {
     currentStats.hitMissRatio = currentStats.totalShots ?
         (100.0 * currentStats.hits / currentStats.totalShots) : 0.0;
 
-    computeProbabilities(liveHits, liveMisses, liveProb);
+    // Build view from live hits/misses: 'X' for hit, 'm' for miss, '-' unknown
+    char view[NUM_ROWS][NUM_COLS];
+    int remainingCells = 0;
+    for (int i = 0; i < NUM_SHIPS; ++i) remainingCells += targetShipSizes[i];
+    for (int r = 0; r < NUM_ROWS; ++r) {
+        for (int c = 0; c < NUM_COLS; ++c) {
+            if (liveHits[r][c] > 0) view[r][c] = 'X';
+            else if (liveMisses[r][c] > 0) view[r][c] = 'm';
+            else view[r][c] = '-';
+        }
+    }
+    computePlacementProbabilities(view, targetShipSizes, liveProb);
+    // Endgame Monte-Carlo blend when few ship cells remain
+    if (remainingCells <= gAIWeights.mcBlendThresholdCells) {
+        double mcMap[NUM_ROWS][NUM_COLS];
+        monteCarloProbabilities(view, targetShipSizes, gAIWeights.mcIterations, mcMap);
+        for (int r = 0; r < NUM_ROWS; ++r)
+            for (int c = 0; c < NUM_COLS; ++c)
+                liveProb[r][c] = (1.0 - gAIWeights.mcBlendRatio) * liveProb[r][c] + gAIWeights.mcBlendRatio * mcMap[r][c];
+    }
 
     // Log message
     {
@@ -162,6 +190,54 @@ const float* RoundState::getHeatmapSnapshot() {
         }
     }
     return HEATMAP_BUFFER;
+}
+
+const float* RoundState::snapshotPlayer1Board() {
+    // Player 1's board (what Player 2 is attacking)
+    const char (*b)[NUM_COLS] = playerBoard;
+    for (int r = 0; r < NUM_ROWS; ++r) {
+        for (int c = 0; c < NUM_COLS; ++c) {
+            float v = 0.0f;
+            if (b[r][c] == MISS) v = -1.0f;
+            else if (b[r][c] == HIT) v = 1.0f;
+            BOARD1_BUFFER[r * NUM_COLS + c] = v;
+        }
+    }
+    return BOARD1_BUFFER;
+}
+
+const float* RoundState::snapshotPlayer2Board() {
+    // Player 2's board (what Player 1 is attacking)
+    const char (*b)[NUM_COLS] = computerBoard;
+    for (int r = 0; r < NUM_ROWS; ++r) {
+        for (int c = 0; c < NUM_COLS; ++c) {
+            float v = 0.0f;
+            if (b[r][c] == MISS) v = -1.0f;
+            else if (b[r][c] == HIT) v = 1.0f;
+            BOARD2_BUFFER[r * NUM_COLS + c] = v;
+        }
+    }
+    return BOARD2_BUFFER;
+}
+
+const float* RoundState::getPlayer1Heatmap() {
+    // P1's targeting heatmap (simplified - use global for now)
+    for (int r = 0; r < NUM_ROWS; ++r) {
+        for (int c = 0; c < NUM_COLS; ++c) {
+            HEAT1_BUFFER[r * NUM_COLS + c] = static_cast<float>(liveProb[r][c]);
+        }
+    }
+    return HEAT1_BUFFER;
+}
+
+const float* RoundState::getPlayer2Heatmap() {
+    // P2's targeting heatmap (simplified - use global for now)
+    for (int r = 0; r < NUM_ROWS; ++r) {
+        for (int c = 0; c < NUM_COLS; ++c) {
+            HEAT2_BUFFER[r * NUM_COLS + c] = static_cast<float>(liveProb[r][c]);
+        }
+    }
+    return HEAT2_BUFFER;
 }
 
 void Tournament::start(int mode, int n) {
@@ -220,4 +296,20 @@ const float* Tournament::snapshotBoard() {
 
 const float* Tournament::getHeatmapSnapshot() {
     return current.getHeatmapSnapshot();
+}
+
+const float* Tournament::snapshotPlayer1Board() {
+    return current.snapshotPlayer1Board();
+}
+
+const float* Tournament::snapshotPlayer2Board() {
+    return current.snapshotPlayer2Board();
+}
+
+const float* Tournament::getPlayer1Heatmap() {
+    return current.getPlayer1Heatmap();
+}
+
+const float* Tournament::getPlayer2Heatmap() {
+    return current.getPlayer2Heatmap();
 }

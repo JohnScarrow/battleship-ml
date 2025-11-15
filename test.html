@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>WASM Test</title>
+</head>
+<body>
+  <h1>WASM Module Test</h1>
+  <pre id="output"></pre>
+  
+  <script type="module">
+    const output = document.getElementById('output');
+    function log(msg) {
+      output.textContent += msg + '\n';
+      console.log(msg);
+    }
+
+    try {
+      log('Loading WASM module...');
+      const createModule = (await import('./dist/battleship.js')).default;
+      
+      const mod = await createModule({
+        print: t => log(`[WASM] ${t}`),
+        printErr: t => log(`[ERROR] ${t}`),
+      });
+      
+      log('✓ WASM module loaded');
+      
+      // Test wrapping functions
+      const startTournament = mod.cwrap('startTournament', null, ['number','number']);
+      const tickTournament = mod.cwrap('tickTournament', 'string', []);
+      const isTournamentDone = mod.cwrap('isTournamentDone', 'number', []);
+      const getBoardSnapshot = mod.cwrap('getBoardSnapshot', 'number', []);
+      const getHeatmapSnapshot = mod.cwrap('getHeatmapSnapshot', 'number', []);
+      
+      log('✓ All functions wrapped');
+      
+      // Test starting tournament
+      log('\nStarting tournament (mode=3, rounds=2)...');
+      startTournament(3, 2);
+      log('✓ Tournament started');
+      
+      // Test ticking a few moves
+      log('\nTicking 5 moves:');
+      for (let i = 0; i < 5; i++) {
+        const msg = tickTournament();
+        log(`  ${i+1}. ${msg}`);
+      }
+      
+      // Test board snapshot
+      const boardPtr = getBoardSnapshot();
+      const boardData = new Float32Array(mod.HEAPF32.buffer, boardPtr, 100);
+      log(`✓ Board snapshot: ${boardData.length} floats`);
+      log(`  First 10 values: [${Array.from(boardData.slice(0,10)).join(', ')}]`);
+      
+      // Test heatmap
+      const heatPtr = getHeatmapSnapshot();
+      const heatData = new Float32Array(mod.HEAPF32.buffer, heatPtr, 100);
+      log(`✓ Heatmap snapshot: ${heatData.length} floats`);
+      log(`  First 10 values: [${Array.from(heatData.slice(0,10)).map(v => v.toFixed(3)).join(', ')}]`);
+      
+      // Test done check
+      const isDone = isTournamentDone();
+      log(`✓ Tournament done: ${isDone ? 'YES' : 'NO'}`);
+      
+      log('\n✅ All tests passed!');
+      
+    } catch (err) {
+      log(`❌ Error: ${err.message}`);
+      log(err.stack);
+    }
+  </script>
+</body>
+</html>

@@ -3,6 +3,12 @@
 
 using namespace std;
 
+// Global AI weights instance
+AIWeights gAIWeights{};
+
+void setAIWeights(const AIWeights &w) { gAIWeights = w; }
+void getAIWeights(AIWeights &out) { out = gAIWeights; }
+
 // learnFromLog removed for WASM - no file I/O
 // Learning happens in-memory during the tournament
 
@@ -62,6 +68,19 @@ pair<int,int> getSmartMove(const char board[NUM_ROWS][NUM_COLS],
 
 // saveHeatmap removed for WASM - no file I/O
 // Heatmap data is exposed via getHeatmapSnapshot()
+
+// Native stub: read historical log (no-op in this build)
+void learnFromLog(const string &filename,
+                  int hitCount[NUM_ROWS][NUM_COLS],
+                  int missCount[NUM_ROWS][NUM_COLS]) {
+    // Intentionally left blank for WASM/no-file environments; native runs may implement this.
+    (void)filename; (void)hitCount; (void)missCount;
+}
+
+// Native stub: save heatmap to file (no-op)
+void saveHeatmap(const string &filename, double hitProb[NUM_ROWS][NUM_COLS]) {
+    (void)filename; (void)hitProb;
+}
 
 
 void updateLiveHeatmap(const char board[NUM_ROWS][NUM_COLS],
@@ -136,14 +155,18 @@ bool isCellAvailable(const char board[NUM_ROWS][NUM_COLS], int r, int c) {
 }
 
 // Queue up neighbors (up, down, left, right) after a hit
+static bool inQueue(const TargetState &ts, int r, int c) {
+    for (auto &p : ts.queue) if (p.first == r && p.second == c) return true;
+    return false;
+}
+
 void enqueueNeighbors(TargetState &ts, const char board[NUM_ROWS][NUM_COLS], int r, int c) {
-    ts.queue.clear();
     const int dr[4] = {-1, 1, 0, 0};
     const int dc[4] = {0, 0, -1, 1};
     for (int k = 0; k < 4; ++k) {
         int nr = r + dr[k], nc = c + dc[k];
         if (isCellAvailable(board, nr, nc)) {
-            ts.queue.emplace_back(nr, nc);
+            if (!inQueue(ts, nr, nc)) ts.queue.emplace_back(nr, nc);
         }
     }
 }
@@ -154,32 +177,32 @@ void enqueueOrientedLine(TargetState &ts,
     int r = ts.lastHitRow;
     int c = ts.lastHitCol;
 
-    ts.queue.clear();
+    // Preserve existing queue; we'll append oriented extensions uniquely
 
     if (ts.orientation == 1) { // horizontal
         // left
         for (int cc = c - 1; cc >= 0; --cc) {
             if (checkShotIsAvailable(targetBoard, r, cc)) {
-                ts.queue.push_back({r, cc});
+                if (!inQueue(ts, r, cc)) ts.queue.push_back({r, cc});
             } else if (targetBoard[r][cc] != 'X') break;
         }
         // right
         for (int cc = c + 1; cc < NUM_COLS; ++cc) {
             if (checkShotIsAvailable(targetBoard, r, cc)) {
-                ts.queue.push_back({r, cc});
+                if (!inQueue(ts, r, cc)) ts.queue.push_back({r, cc});
             } else if (targetBoard[r][cc] != 'X') break;
         }
     } else if (ts.orientation == 2) { // vertical
         // up
         for (int rr = r - 1; rr >= 0; --rr) {
             if (checkShotIsAvailable(targetBoard, rr, c)) {
-                ts.queue.push_back({rr, c});
+                if (!inQueue(ts, rr, c)) ts.queue.push_back({rr, c});
             } else if (targetBoard[rr][c] != 'X') break;
         }
         // down
         for (int rr = r + 1; rr < NUM_ROWS; ++rr) {
             if (checkShotIsAvailable(targetBoard, rr, c)) {
-                ts.queue.push_back({rr, c});
+                if (!inQueue(ts, rr, c)) ts.queue.push_back({rr, c});
             } else if (targetBoard[rr][c] != 'X') break;
         }
     }
@@ -203,13 +226,19 @@ std::pair<int,int> chooseAIMove(const char board[NUM_ROWS][NUM_COLS],
         for (auto &mv : ts.queue) {
             int r = mv.first, c = mv.second;
             if (!checkShotIsAvailable(board, r, c)) continue;
-            if (globalProb[r][c] > bestScore) {
-                bestScore = globalProb[r][c];
+            double s = scoreCell(r, c, board, globalProb, liveProb, remaining, turn);
+            if (s > bestScore) {
+                bestScore = s;
                 best = mv;
             }
         }
-        ts.queue.clear();
-        if (best.first != -1) return best;
+        // remove chosen cell from queue (if any) and return
+        if (best.first != -1) {
+            // remove chosen element only
+            auto it = std::remove_if(ts.queue.begin(), ts.queue.end(), [&](auto &p){return p.first==best.first && p.second==best.second;});
+            ts.queue.erase(it, ts.queue.end());
+            return best;
+        }
         // If queue was invalid, reset targeting
         ts.active = false; ts.oriented = false; ts.orientation = 0;
     }
@@ -218,14 +247,27 @@ std::pair<int,int> chooseAIMove(const char board[NUM_ROWS][NUM_COLS],
     double bestScore = -1.0;
     pair<int,int> bestMove = {-1,-1};
 
-    for (int r = 0; r < NUM_ROWS; ++r) {
-        for (int c = 0; c < NUM_COLS; ++c) {
-            double s = scoreCell(r, c, board, globalProb, liveProb, remaining, turn);
-            if (s > bestScore) {
-                bestScore = s;
-                bestMove = {r, c};
+    // Iterate cells in a center-out spiral so ties and small score differences bias toward center
+    int centerR = NUM_ROWS / 2 - (NUM_ROWS % 2 == 0 ? 1 : 0);
+    int centerC = NUM_COLS / 2 - (NUM_COLS % 2 == 0 ? 1 : 0);
+    int layer = 0;
+    int found = 0;
+    while (layer <= max(NUM_ROWS, NUM_COLS) && found < NUM_ROWS * NUM_COLS) {
+        for (int dr = -layer; dr <= layer; ++dr) {
+            for (int dc = -layer; dc <= layer; ++dc) {
+                if (abs(dr) != layer && abs(dc) != layer) continue;
+                int r = centerR + dr;
+                int c = centerC + dc;
+                if (r < 0 || r >= NUM_ROWS || c < 0 || c >= NUM_COLS) continue;
+                found++;
+                double s = scoreCell(r, c, board, globalProb, liveProb, remaining, turn);
+                if (s > bestScore) {
+                    bestScore = s;
+                    bestMove = {r, c};
+                }
             }
         }
+        layer++;
     }
 
     // Fallback if nothing valid
@@ -273,28 +315,26 @@ double scoreCell(int r, int c,
     bool canFit = false;
     for (int horiz = 0; horiz <= 1 && !canFit; ++horiz)
         canFit = shipFitsAt(board, r, c, minShipSize, horiz);
-    if (!canFit) score -= 0.5; // Penalize cells that can't fit smallest ship
+    if (!canFit) score += gAIWeights.noFitPenalty; // Penalize cells that can't fit smallest ship
 
     
     // Dynamic heatmap weighting with smoother decay and stronger tactical bias
-    double alpha = (turn < 10) ? 0.75 : 0.55; // Global
+    double alpha = (turn < 10) ? gAIWeights.globalAlphaEarly : gAIWeights.globalAlphaLate; // Global
     double beta = 1.0 - alpha; // Live
-    double decay = exp(-0.02 * turn);  // smoother fade over time
+    double decay = exp(-gAIWeights.liveDecayFactor * turn);  // smoother fade over time
 
     score += alpha * globalProb[r][c];
     score += beta * liveProb[r][c] * decay;
 
     // Tactical streak bonus
-    if (liveProb[r][c] > 0.0) {
-        score += 0.05;  // small bonus for tactical relevance
-    }
+    if (liveProb[r][c] > 0.0) score += gAIWeights.tacticalLiveBonus;
 
 
     bool bigShipLeft = false;
     for (int i = 0; i < NUM_SHIPS; ++i) if (remaining[i] >= 3) { bigShipLeft = true; break; }
     if (bigShipLeft) {
-        if ((r + c) % 2 == 0) score += 0.25;
-        else score -= 0.15;    }
+        if ((r + c) % 2 == 0) score += gAIWeights.parityBonus;
+        else score += gAIWeights.parityPenalty; }
 
 
 // Cardinal Adjacency Loop
@@ -306,12 +346,12 @@ double scoreCell(int r, int c,
         if (nr >= 0 && nr < NUM_ROWS && nc >= 0 && nc < NUM_COLS) {
             if (board[nr][nc] == 'X') {
                 adjHits++;
-                score += 0.4;
+                score += gAIWeights.adjHitBonus;
 
                 // Bonus for extending in same direction
                 int nnr = nr + dr[k], nnc = nc + dc[k];
                 if (nnr >= 0 && nnr < NUM_ROWS && nnc >= 0 && nnc < NUM_COLS) {
-                    if (board[nnr][nnc] == 'X') score += 0.3;
+                    if (board[nnr][nnc] == 'X') score += gAIWeights.adjLineBonus;
                 }
             }
         }
@@ -322,7 +362,7 @@ const int dc_diag[4] = {-1, 1, -1, 1};
 for (int k = 0; k < 4; ++k) {
     int nr = r + dr_diag[k], nc = c + dc_diag[k];
     if (nr >= 0 && nr < NUM_ROWS && nc >= 0 && nc < NUM_COLS) {
-        if (board[nr][nc] == 'X') score += 0.2;
+        if (board[nr][nc] == 'X') score += gAIWeights.diagHitBonus;
     }
 }
 
@@ -330,11 +370,11 @@ for (int k = 0; k < 4; ++k) {
 
     if (adjHits > 2) {
         double fitScore = shipFitBiasScoreAt(board, r, c, remaining);
-        score += 0.30 * fitScore;  // Only boost fit if near a hit
+        score += gAIWeights.fitScoreNearAdjFactor * fitScore;  // Only boost fit if near a hit
     }
 
-    score += adjHits * 0.6;
-    score += 0.20 * fitScore; //Change this to tune influence of fit score Default is 0.05
+    score += adjHits * (gAIWeights.adjHitBonus + 0.2); // slight compounded effect
+    score += gAIWeights.fitScoreBaseFactor * fitScore; // base fit influence
     
     // Debug output
     // printf("Turn %d | Global: %.3f | Live: %.3f | Decay: %.3f | Weighted Live: %.3f\n",
@@ -505,6 +545,165 @@ void generatePlacementWeights(double weights[NUM_ROWS][NUM_COLS]) {
             weights[r][c] = 1.0 + edgeDist * 0.5;
         }
     }
+}
+
+
+// Enumerate placements for each remaining ship and count how many placements
+// cover each unknown cell. Produces a normalized probability map in outProb.
+void computePlacementProbabilities(const char boardView[NUM_ROWS][NUM_COLS],
+                                   const int remaining[NUM_SHIPS],
+                                   double outProb[NUM_ROWS][NUM_COLS]) {
+    // zero counts
+    int counts[NUM_ROWS][NUM_COLS] = {0};
+    for (int r = 0; r < NUM_ROWS; ++r)
+        for (int c = 0; c < NUM_COLS; ++c)
+            outProb[r][c] = 0.0;
+
+    // For each ship size remaining, enumerate placements
+    for (int i = 0; i < NUM_SHIPS; ++i) {
+        int len = remaining[i];
+        if (len <= 0) continue;
+
+        for (int horiz = 0; horiz <= 1; ++horiz) {
+            int dr = horiz ? 0 : 1;
+            int dc = horiz ? 1 : 0;
+
+            for (int r = 0; r < NUM_ROWS; ++r) {
+                for (int c = 0; c < NUM_COLS; ++c) {
+                    int endR = r + dr * (len - 1);
+                    int endC = c + dc * (len - 1);
+                    if (endR < 0 || endR >= NUM_ROWS || endC < 0 || endC >= NUM_COLS) continue;
+
+                    bool valid = true;
+                    for (int k = 0; k < len; ++k) {
+                        int nr = r + k * dr;
+                        int nc = c + k * dc;
+                        char cell = boardView[nr][nc];
+                        if (cell == 'm') { valid = false; break; } // placement hits a known miss
+                        // 'X' (known hit) is allowed and desirable
+                    }
+                    if (!valid) continue;
+
+                    // Determine placement weight: placements that cover existing hits are more valuable
+                    int coversHit = 0;
+                    for (int k = 0; k < len; ++k) {
+                        int nr = r + k * dr;
+                        int nc = c + k * dc;
+                        if (boardView[nr][nc] == 'X') coversHit++;
+                    }
+                    double placementWeight = 1.0 + gAIWeights.placementHitMultiplier * coversHit; // increase weight if it includes hits
+
+                    // This placement is valid; increment counts for unknown cells
+                    for (int k = 0; k < len; ++k) {
+                        int nr = r + k * dr;
+                        int nc = c + k * dc;
+                        if (boardView[nr][nc] == '-') counts[nr][nc] += static_cast<int>(placementWeight);
+                    }
+                }
+            }
+        }
+    }
+
+    // Find max count for normalization
+    int maxCount = 0;
+    for (int r = 0; r < NUM_ROWS; ++r)
+        for (int c = 0; c < NUM_COLS; ++c)
+            if (counts[r][c] > maxCount) maxCount = counts[r][c];
+
+    if (maxCount == 0) {
+        // fallback: small uniform map for any available shots
+        for (int r = 0; r < NUM_ROWS; ++r)
+            for (int c = 0; c < NUM_COLS; ++c)
+                outProb[r][c] = (boardView[r][c] == '-') ? 1.0 : 0.0;
+        // normalize
+        double localMax = 0.0;
+        for (int r = 0; r < NUM_ROWS; ++r)
+            for (int c = 0; c < NUM_COLS; ++c)
+                if (outProb[r][c] > localMax) localMax = outProb[r][c];
+        if (localMax > 0.0) for (int r = 0; r < NUM_ROWS; ++r)
+            for (int c = 0; c < NUM_COLS; ++c) outProb[r][c] /= localMax;
+        return;
+    }
+
+    for (int r = 0; r < NUM_ROWS; ++r)
+        for (int c = 0; c < NUM_COLS; ++c)
+            outProb[r][c] = static_cast<double>(counts[r][c]) / static_cast<double>(maxCount);
+}
+
+
+// Monte-Carlo sampler: randomly place remaining ships consistent with boardView.
+// iterations controls sample count. This is slower but often produces robust maps.
+void monteCarloProbabilities(const char boardView[NUM_ROWS][NUM_COLS],
+                             const int remaining[NUM_SHIPS],
+                             int iterations,
+                             double outProb[NUM_ROWS][NUM_COLS]) {
+    // accumulate counts
+    int counts[NUM_ROWS][NUM_COLS] = {0};
+    srand(static_cast<unsigned int>(time(nullptr)));
+
+    // Precompute list of ship sizes to place
+    vector<int> ships;
+    for (int i = 0; i < NUM_SHIPS; ++i) if (remaining[i] > 0) ships.push_back(remaining[i]);
+    if (ships.empty()) {
+        for (int r = 0; r < NUM_ROWS; ++r)
+            for (int c = 0; c < NUM_COLS; ++c) outProb[r][c] = 0.0;
+        return;
+    }
+
+    for (int it = 0; it < iterations; ++it) {
+        // try to place all ships randomly; if fail, skip sample
+        char sample[NUM_ROWS][NUM_COLS];
+        for (int r = 0; r < NUM_ROWS; ++r)
+            for (int c = 0; c < NUM_COLS; ++c) sample[r][c] = boardView[r][c];
+
+        bool ok = true;
+        for (int s = 0; s < (int)ships.size(); ++s) {
+            int len = ships[s];
+            bool placed = false;
+            for (int attempt = 0; attempt < 200 && !placed; ++attempt) {
+                bool horiz = rand() % 2;
+                int r = rand() % NUM_ROWS;
+                int c = rand() % NUM_COLS;
+                if (!shipFitsAt(sample, r, c, len, horiz)) continue;
+                // ensure doesn't overwrite known misses or hits in inconsistent way
+                bool conflict = false;
+                for (int k = 0; k < len; ++k) {
+                    int nr = r + (horiz ? 0 : k);
+                    int nc = c + (horiz ? k : 0);
+                    if (boardView[nr][nc] == 'm') { conflict = true; break; }
+                }
+                if (conflict) continue;
+                // place with symbol 'S'
+                for (int k = 0; k < len; ++k) {
+                    int nr = r + (horiz ? 0 : k);
+                    int nc = c + (horiz ? k : 0);
+                    sample[nr][nc] = 'S';
+                }
+                placed = true;
+            }
+            if (!placed) { ok = false; break; }
+        }
+        if (!ok) continue;
+
+        // accumulate counts for unknown cells
+        for (int r = 0; r < NUM_ROWS; ++r)
+            for (int c = 0; c < NUM_COLS; ++c)
+                if (sample[r][c] == 'S') counts[r][c]++;
+    }
+
+    int maxCount = 0;
+    for (int r = 0; r < NUM_ROWS; ++r)
+        for (int c = 0; c < NUM_COLS; ++c)
+            if (counts[r][c] > maxCount) maxCount = counts[r][c];
+
+    if (maxCount == 0) {
+        for (int r = 0; r < NUM_ROWS; ++r)
+            for (int c = 0; c < NUM_COLS; ++c) outProb[r][c] = 0.0;
+        return;
+    }
+    for (int r = 0; r < NUM_ROWS; ++r)
+        for (int c = 0; c < NUM_COLS; ++c)
+            outProb[r][c] = static_cast<double>(counts[r][c]) / static_cast<double>(maxCount);
 }
 
 /**

@@ -5,18 +5,50 @@
     <title>Battleship ML (WASM)</title>
     <style>
       body { font-family: monospace; background:#0b0e12; color:#e6e6e6; margin:0; padding:20px; }
-      #ui { display:flex; gap:20px; align-items:flex-start; }
+      #ui { display:flex; gap:20px; align-items:flex-start; flex-wrap: wrap; }
+      .boards { display: flex; gap: 20px; flex-direction: column; }
+      .board-container { display: flex; flex-direction: column; align-items: center; }
+      .board-container h3 { margin: 0 0 10px 0; font-size: 14px; text-align: center; }
       canvas { border:1px solid #333; background:#0b0e12; }
-      pre { max-height:400px; overflow:auto; background:#0a0d11; padding:12px; border:1px solid #333; }
+      .stats { background:#0a0d11; padding:12px; border:1px solid #333; margin-top: 10px; font-size: 12px; }
+      .stats div { margin: 4px 0; }
+      pre { max-height:600px; overflow:auto; background:#0a0d11; padding:12px; border:1px solid #333; min-width: 400px; }
+      .controls { background:#0a0d11; padding:12px; border:1px solid #333; }
       label, input, button { display:block; margin-top:8px; }
+      button { background:#1e88e5; color:#fff; border:none; padding:8px 16px; cursor:pointer; }
+      button:hover { background:#1976d2; }
+      .legend { font-size: 11px; margin-top: 10px; }
+      .legend div { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+      .legend .box { width: 20px; height: 20px; border: 1px solid #333; }
     </style>
   </head>
   <body>
     <h1>Battleship ML (C++ → WebAssembly)</h1>
     <div id="ui">
+      <div class="boards">
+        <div class="board-container">
+          <h3>Player 1 Board (AI Targeting)</h3>
+          <canvas id="board1" width="400" height="400"></canvas>
+          <div class="stats" id="stats1">
+            <div>Hits: <span id="p1-hits">0</span></div>
+            <div>Misses: <span id="p1-misses">0</span></div>
+            <div>Total Shots: <span id="p1-total">0</span></div>
+            <div>Accuracy: <span id="p1-acc">0%</span></div>
+          </div>
+        </div>
+        <div class="board-container">
+          <h3>Player 2 Board (AI Targeting)</h3>
+          <canvas id="board2" width="400" height="400"></canvas>
+          <div class="stats" id="stats2">
+            <div>Hits: <span id="p2-hits">0</span></div>
+            <div>Misses: <span id="p2-misses">0</span></div>
+            <div>Total Shots: <span id="p2-total">0</span></div>
+            <div>Accuracy: <span id="p2-acc">0%</span></div>
+          </div>
+        </div>
+      </div>
       <div>
-        <canvas id="board" width="500" height="500"></canvas>
-        <div>
+        <div class="controls">
           <label>Mode</label>
           <select id="mode">
             <option value="3">Computer vs Computer</option>
@@ -24,54 +56,163 @@
             <option value="1">Player vs Player (AI auto)</option>
           </select>
           <label>Total games</label>
-          <input id="games" type="number" min="1" value="20"/>
+          <input id="games" type="number" min="1" value="50"/>
+            <label><input type="checkbox" id="stepMode"/> Step Mode</label>
+              <button id="step" disabled>Step</button>
+              <button id="resume" disabled>Resume</button>
           <button id="start">Start</button>
+          <div class="legend">
+            <div><div class="box" style="background:#4caf50"></div> Hit</div>
+            <div><div class="box" style="background:#e53935"></div> Miss</div>
+            <div><div class="box" style="background:rgba(0,140,255,0.5)"></div> AI Heatmap</div>
+          </div>
         </div>
+        <pre id="log"></pre>
       </div>
-      <pre id="log"></pre>
     </div>
 
     <script type="module">
       import createModule from "./dist/battleship.js";
 
-      const mod = await createModule({
-        print: t => console.log(t),
-        printErr: t => console.error(t),
-      });
+      let mod;
+      try {
+        mod = await createModule({
+          print: t => console.log(t),
+          printErr: t => console.error(t),
+        });
+        console.log("WASM module loaded successfully");
+      } catch (err) {
+        console.error("Failed to load WASM module:", err);
+        document.getElementById('log').textContent = `Error loading WASM: ${err.message}`;
+        throw err;
+      }
 
       const start = mod.cwrap('startTournament', null, ['number','number']);
       const tick  = mod.cwrap('tickTournament', 'string', []);
       const done  = mod.cwrap('isTournamentDone', 'number', []);
       const snap  = mod.cwrap('getBoardSnapshot', 'number', []);
       const heat  = mod.cwrap('getHeatmapSnapshot', 'number', []);
+      const snap1 = mod.cwrap('getPlayer1BoardSnapshot', 'number', []);
+      const snap2 = mod.cwrap('getPlayer2BoardSnapshot', 'number', []);
+      const heat1 = mod.cwrap('getPlayer1HeatmapSnapshot', 'number', []);
+      const heat2 = mod.cwrap('getPlayer2HeatmapSnapshot', 'number', []);
 
-      const canvas = document.getElementById('board');
-      const ctx = canvas.getContext('2d');
+      const canvas1 = document.getElementById('board1');
+      const canvas2 = document.getElementById('board2');
+      const ctx1 = canvas1.getContext('2d');
+      const ctx2 = canvas2.getContext('2d');
       const logEl = document.getElementById('log');
       const startBtn = document.getElementById('start');
       const modeSel = document.getElementById('mode');
       const gamesInput = document.getElementById('games');
 
-      function renderBoard() {
-        const ptr = snap();
-        const hptr = heat();
-        const data = new Float32Array(mod.HEAPF32.buffer, ptr, 100);
-        const hdata = new Float32Array(mod.HEAPF32.buffer, hptr, 100);
-        const size = 10, cell = canvas.width / size;
-        ctx.fillStyle = '#0b0e12'; ctx.fillRect(0,0,canvas.width,canvas.height);
-        for (let r=0; r<size; r++) for (let c=0; c<size; c++) {
-          const idx = r*size+c;
-          const v = data[idx];
-          const hv = hdata[idx];
-          // Heatmap overlay for untouched cells
-          if (v === 0 && hv > 0) {
-            const alpha = 0.12 + 0.55 * hv; // base + scaled probability
-            ctx.fillStyle = `rgba(0,140,255,${alpha.toFixed(3)})`;
-            ctx.fillRect(c*cell, r*cell, cell, cell);
+      let p1Stats = { hits: 0, misses: 0, total: 0 };
+      let p2Stats = { hits: 0, misses: 0, total: 0 };
+
+      function updateStats(player, hits, misses, total) {
+        const acc = total > 0 ? ((hits / total) * 100).toFixed(1) : 0;
+        document.getElementById(`p${player}-hits`).textContent = hits;
+        document.getElementById(`p${player}-misses`).textContent = misses;
+        document.getElementById(`p${player}-total`).textContent = total;
+        document.getElementById(`p${player}-acc`).textContent = acc + '%';
+      }
+
+      function renderBoardToCanvas(ctx, data, hdata, width, height) {
+        const size = 10, cell = width / size;
+        
+        // Clear with dark background
+        ctx.fillStyle = '#0b0e12'; 
+        ctx.fillRect(0, 0, width, height);
+        
+        for (let r = 0; r < size; r++) {
+          for (let c = 0; c < size; c++) {
+            const idx = r * size + c;
+            const v = data[idx];
+            const hv = hdata[idx];
+            
+            // Draw cell background (empty cells get a slight gray to show grid)
+            ctx.fillStyle = '#1a1d24';
+            ctx.fillRect(c * cell + 1, r * cell + 1, cell - 2, cell - 2);
+            
+            // Heatmap overlay for untouched cells
+            if (v === 0 && hv > 0) {
+              const alpha = 0.15 + 0.65 * hv;
+              ctx.fillStyle = `rgba(0,140,255,${alpha.toFixed(3)})`;
+              ctx.fillRect(c * cell + 1, r * cell + 1, cell - 2, cell - 2);
+            }
+            
+            // Hits - bright green
+            if (v === 1) { 
+              ctx.fillStyle = '#4caf50'; 
+              ctx.fillRect(c * cell + 1, r * cell + 1, cell - 2, cell - 2);
+            } 
+            // Misses - red
+            else if (v === -1) { 
+              ctx.fillStyle = '#e53935'; 
+              ctx.fillRect(c * cell + 1, r * cell + 1, cell - 2, cell - 2);
+            }
+            
+            // Visible grid lines
+            ctx.strokeStyle = '#4a4f57'; 
+            ctx.lineWidth = 1;
+            ctx.strokeRect(c * cell, r * cell, cell, cell);
           }
-          if (v === 1) { ctx.fillStyle = '#4caf50'; ctx.fillRect(c*cell, r*cell, cell, cell); } // hit
-          else if (v === -1) { ctx.fillStyle = '#e53935'; ctx.fillRect(c*cell, r*cell, cell, cell); } // miss
-          ctx.strokeStyle = '#3a3f47'; ctx.strokeRect(c*cell, r*cell, cell, cell);
+        }
+      }
+
+      function renderBoard() {
+        try {
+          // Check if module memory is available
+          if (!mod || !mod.HEAPF32) {
+            console.warn("Module or HEAPF32 not ready");
+            return;
+          }
+          
+          // Get Player 1's board and heatmap
+          const ptr1 = snap1();
+          const hptr1 = heat1();
+          const data1 = new Float32Array(mod.HEAPF32.buffer, ptr1, 100);
+          const hdata1 = new Float32Array(mod.HEAPF32.buffer, hptr1, 100);
+          
+          // Get Player 2's board and heatmap
+          const ptr2 = snap2();
+          const hptr2 = heat2();
+          const data2 = new Float32Array(mod.HEAPF32.buffer, ptr2, 100);
+          const hdata2 = new Float32Array(mod.HEAPF32.buffer, hptr2, 100);
+          
+          // Debug: log first render
+          if (!renderBoard.hasRendered) {
+            console.log('First render - Board 1 sample:', Array.from(data1.slice(0, 10)));
+            console.log('First render - Board 2 sample:', Array.from(data2.slice(0, 10)));
+            console.log('First render - Heat 1 sample:', Array.from(hdata1.slice(0, 10)));
+            renderBoard.hasRendered = true;
+          }
+          
+          // Render both boards
+          renderBoardToCanvas(ctx1, data1, hdata1, canvas1.width, canvas1.height);
+          renderBoardToCanvas(ctx2, data2, hdata2, canvas2.width, canvas2.height);
+          
+          // Count stats for each board
+          let hits1 = 0, misses1 = 0;
+          let hits2 = 0, misses2 = 0;
+          
+          for (let i = 0; i < 100; i++) {
+            if (data1[i] === 1) hits1++;
+            else if (data1[i] === -1) misses1++;
+            
+            if (data2[i] === 1) hits2++;
+            else if (data2[i] === -1) misses2++;
+          }
+          
+          // Update stats displays
+          p1Stats = { hits: hits2, misses: misses2, total: hits2 + misses2 };
+          p2Stats = { hits: hits1, misses: misses1, total: hits1 + misses1 };
+          
+          updateStats(1, p1Stats.hits, p1Stats.misses, p1Stats.total);
+          updateStats(2, p2Stats.hits, p2Stats.misses, p2Stats.total);
+        } catch (err) {
+          console.error("Error rendering board:", err);
+          console.error(err.stack);
         }
       }
 
@@ -81,47 +222,132 @@
         logEl.scrollTop = logEl.scrollHeight;
       }
 
-      function warGamesRamp() {
+      let stepModeEnabled = false;
+      let currentTotalGames = 0;
+      function warGamesRamp(totalGames) {
+        // If user requests many games, cap final rate to avoid browser lag
+        const finalRate = totalGames >= 30 ? 30 : 60;
         let phases = [
-          { rate: 2,  durationMs: 4000 },  // slow to savor
-          { rate: 8,  durationMs: 4000 },
-          { rate: 20, durationMs: 4000 },
-          { rate: 60, durationMs: 0 },     // max speed until done
+          { rate: 2,  durationMs: 3000 },  // slow to savor
+          { rate: 8,  durationMs: 3000 },
+          { rate: 20, durationMs: 2000 },
+          { rate: finalRate, durationMs: 0 },
         ];
         let phaseIndex = 0, lastSwitch = performance.now();
         let accumulator = 0, last = performance.now();
 
         function loop(now) {
-          const dt = (now - last) / 1000.0; last = now;
-          const phase = phases[phaseIndex] || phases[phases.length-1];
-          const interval = 1.0 / phase.rate;
-          accumulator += dt;
-          while (accumulator >= interval) {
-            accumulator -= interval;
-            const msg = tick();
-            appendLog(msg);
-            renderBoard();
-            if (done()) return;
+          if (stepModeEnabled) return; // do not auto-loop in step mode
+          try {
+            const dt = (now - last) / 1000.0; last = now;
+            const phase = phases[phaseIndex] || phases[phases.length-1];
+            const interval = 1.0 / phase.rate;
+            accumulator += dt;
+            while (accumulator >= interval) {
+              accumulator -= interval;
+              const msg = tick();
+              if (msg) appendLog(msg);
+              renderBoard();
+              if (done()) {
+                appendLog('[Tournament complete]');
+                return;
+              }
+            }
+            if (phase.durationMs > 0 && now - lastSwitch > phase.durationMs) {
+              phaseIndex++; lastSwitch = now;
+              const nextRate = phases[phaseIndex]?.rate ?? phases[phaseIndex-1].rate;
+              appendLog(`[Speed increased to ${nextRate} ticks/sec]`);
+            }
+            requestAnimationFrame(loop);
+          } catch (err) {
+            console.error("Error in game loop:", err);
+            appendLog(`[Error: ${err.message}]`);
           }
-          if (phase.durationMs > 0 && now - lastSwitch > phase.durationMs) {
-            phaseIndex++; lastSwitch = now;
-            const nextRate = phases[phaseIndex]?.rate ?? phases[phaseIndex-1].rate;
-            appendLog(`[Speed increased to ${nextRate} ticks/sec]`);
-          }
-          requestAnimationFrame(loop);
         }
         requestAnimationFrame(loop);
       }
 
-      startBtn.onclick = () => {
-        logEl.textContent = '';
-        const mode = Number(modeSel.value);
-        const games = Number(gamesInput.value);
-        start(mode, games);
-        appendLog(`[Tournament started: mode=${mode}, games=${games}]`);
-        renderBoard();
-        warGamesRamp();
+      const stepBtn = document.getElementById('step');
+      const stepModeChk = document.getElementById('stepMode');
+
+      const resumeBtn = document.getElementById('resume');
+      stepModeChk.onchange = () => {
+        stepModeEnabled = stepModeChk.checked;
+        stepBtn.disabled = !stepModeEnabled;
+        resumeBtn.disabled = !stepModeEnabled;
       };
+
+      startBtn.onclick = () => {
+        try {
+          logEl.textContent = '';
+          const mode = Number(modeSel.value);
+          const games = Number(gamesInput.value);
+          currentTotalGames = games;
+          appendLog(`[Tournament started: mode=${mode}, games=${games}]`);
+          console.log('Starting tournament...');
+          start(mode, games);
+          console.log('Tournament started, rendering initial board...');
+          renderBoard();
+          console.log('Starting animation loop...');
+          if (!stepModeEnabled) warGamesRamp(games);
+        } catch (err) {
+          console.error("Error starting tournament:", err);
+          appendLog(`[Error: ${err.message}]`);
+        }
+      };
+
+      stepBtn.onclick = () => {
+        if (!stepModeEnabled) return;
+        if (done()) { appendLog('[Tournament complete]'); return; }
+        const msg = tick();
+        if (msg) appendLog(msg);
+        renderBoard();
+      };
+
+      resumeBtn.onclick = () => {
+        // Resume autoplay: disable step controls and start ramp
+        if (done()) { appendLog('[Tournament complete]'); return; }
+        stepModeChk.checked = false;
+        stepModeEnabled = false;
+        stepBtn.disabled = true;
+        resumeBtn.disabled = true;
+        if (currentTotalGames > 0) {
+          warGamesRamp(currentTotalGames);
+          appendLog('[Resumed autoplay]');
+        } else {
+          warGamesRamp(Number(gamesInput.value));
+          appendLog('[Resumed autoplay]');
+        }
+      };
+      
+      // Draw initial empty boards to show canvas is working
+      function drawInitialBoards() {
+        [ctx1, ctx2].forEach(ctx => {
+          ctx.fillStyle = '#0b0e12';
+          ctx.fillRect(0, 0, 400, 400);
+          
+          // Draw grid
+          const size = 10, cell = 40;
+          for (let r = 0; r < size; r++) {
+            for (let c = 0; c < size; c++) {
+              ctx.fillStyle = '#1a1d24';
+              ctx.fillRect(c * cell + 1, r * cell + 1, cell - 2, cell - 2);
+              ctx.strokeStyle = '#4a4f57';
+              ctx.lineWidth = 1;
+              ctx.strokeRect(c * cell, r * cell, cell, cell);
+            }
+          }
+          
+          // Add "Ready" text
+          ctx.fillStyle = '#888';
+          ctx.font = 'bold 24px monospace';
+          ctx.textAlign = 'center';
+          ctx.fillText('Click Start', 200, 200);
+        });
+      }
+      
+      // Initialize boards on load
+      drawInitialBoards();
     </script>
   </body>
 </html>

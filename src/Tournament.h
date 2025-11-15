@@ -47,8 +47,12 @@ struct RoundState {
     const char* tick();
     // Board snapshot for JS (100 floats: 0 empty, 1 hit, -1 miss, optional >1 ship id)
     const float* snapshotBoard(bool showComputerBoard = true);
+    const float* snapshotPlayer1Board(); // Player 1's board (what P2 is attacking)
+    const float* snapshotPlayer2Board(); // Player 2's board (what P1 is attacking)
     // Heatmap snapshot for JS (100 floats: 0.0-1.0 probabilities)
     const float* getHeatmapSnapshot();
+    const float* getPlayer1Heatmap(); // P1's targeting heatmap
+    const float* getPlayer2Heatmap(); // P2's targeting heatmap
     bool isFinished() const { return gameOver; }
     int winnerP1() const { return playerStats.won ? 1 : 0; }
     int winnerP2() const { return computerStats.won ? 1 : 0; }
@@ -68,5 +72,9 @@ struct Tournament {
     const char* tick();
     int done() const;
     const float* snapshotBoard();
+    const float* snapshotPlayer1Board();
+    const float* snapshotPlayer2Board();
     const float* getHeatmapSnapshot();
+    const float* getPlayer1Heatmap();
+    const float* getPlayer2Heatmap();
 };

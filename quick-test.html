@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Quick Test</title>
+  <style>
+    body { font-family: monospace; padding: 20px; background: #1e1e1e; color: #d4d4d4; }
+    canvas { border: 2px solid #4caf50; background: #0a0d11; display: block; margin: 20px 0; }
+    button { background: #1e88e5; color: white; border: none; padding: 10px 20px; cursor: pointer; font-size: 16px; }
+    button:hover { background: #1976d2; }
+    #status { padding: 10px; background: #2d2d2d; margin: 10px 0; }
+    .success { color: #89d185; }
+    .error { color: #f48771; }
+  </style>
+</head>
+<body>
+  <h1>Battleship WASM Quick Test</h1>
+  <div id="status">Loading...</div>
+  <button id="start" disabled>Start Game</button>
+  <canvas id="board1" width="400" height="400"></canvas>
+  <canvas id="board2" width="400" height="400"></canvas>
+  <pre id="log" style="background: #2d2d2d; padding: 10px; max-height: 300px; overflow: auto;"></pre>
+
+  <script type="module">
+    const statusEl = document.getElementById('status');
+    const startBtn = document.getElementById('start');
+    const logEl = document.getElementById('log');
+    const canvas1 = document.getElementById('board1');
+    const canvas2 = document.getElementById('board2');
+    const ctx1 = canvas1.getContext('2d');
+    const ctx2 = canvas2.getContext('2d');
+
+    function log(msg, isError = false) {
+      logEl.textContent += msg + '\n';
+      logEl.scrollTop = logEl.scrollHeight;
+      console.log(msg);
+      if (isError) console.error(msg);
+    }
+
+    function setStatus(msg, isError = false) {
+      statusEl.textContent = msg;
+      statusEl.className = isError ? 'error' : 'success';
+    }
+
+    let mod, start, tick, done, snap1, snap2, heat1, heat2;
+
+    try {
+      setStatus('Loading WASM module...');
+      const createModule = (await import('./dist/battleship.js')).default;
+      
+      mod = await createModule({
+        print: t => log(`[WASM] ${t}`),
+        printErr: t => log(`[ERROR] ${t}`, true),
+      });
+      
+      setStatus('✓ WASM loaded, wrapping functions...');
+      
+      start = mod.cwrap('startTournament', null, ['number','number']);
+      tick = mod.cwrap('tickTournament', 'string', []);
+      done = mod.cwrap('isTournamentDone', 'number', []);
+      snap1 = mod.cwrap('getPlayer1BoardSnapshot', 'number', []);
+      snap2 = mod.cwrap('getPlayer2BoardSnapshot', 'number', []);
+      heat1 = mod.cwrap('getPlayer1HeatmapSnapshot', 'number', []);
+      heat2 = mod.cwrap('getPlayer2HeatmapSnapshot', 'number', []);
+      
+      setStatus('✓ Ready! Click Start to begin');
+      startBtn.disabled = false;
+      
+    } catch (err) {
+      setStatus('❌ Failed to load: ' + err.message, true);
+      log('Error: ' + err.message, true);
+      log(err.stack, true);
+    }
+
+    function drawBoard(ctx, data, hdata) {
+      const size = 10;
+      const cell = 40;
+      
+      ctx.fillStyle = '#0a0d11';
+      ctx.fillRect(0, 0, 400, 400);
+      
+      for (let r = 0; r < size; r++) {
+        for (let c = 0; c < size; c++) {
+          const idx = r * size + c;
+          const v = data[idx];
+          const hv = hdata[idx];
+          
+          // Heatmap
+          if (v === 0 && hv > 0) {
+            const alpha = 0.15 + 0.6 * hv;
+            ctx.fillStyle = `rgba(0, 140, 255, ${alpha})`;
+            ctx.fillRect(c * cell, r * cell, cell, cell);
+          }
+          
+          // Hits
+          if (v === 1) {
+            ctx.fillStyle = '#4caf50';
+            ctx.fillRect(c * cell, r * cell, cell, cell);
+          }
+          
+          // Misses
+          if (v === -1) {
+            ctx.fillStyle = '#e53935';
+            ctx.fillRect(c * cell, r * cell, cell, cell);
+          }
+          
+          // Grid
+          ctx.strokeStyle = '#3a3f47';
+          ctx.strokeRect(c * cell, r * cell, cell, cell);
+        }
+      }
+    }
+
+    function render() {
+      try {
+        const ptr1 = snap1();
+        const ptr2 = snap2();
+        const hptr1 = heat1();
+        const hptr2 = heat2();
+        
+        const data1 = new Float32Array(mod.HEAPF32.buffer, ptr1, 100);
+        const data2 = new Float32Array(mod.HEAPF32.buffer, ptr2, 100);
+        const hdata1 = new Float32Array(mod.HEAPF32.buffer, hptr1, 100);
+        const hdata2 = new Float32Array(mod.HEAPF32.buffer, hptr2, 100);
+        
+        drawBoard(ctx1, data1, hdata1);
+        drawBoard(ctx2, data2, hdata2);
+      } catch (err) {
+        log('Render error: ' + err.message, true);
+      }
+    }
+
+    let animId = null;
+    function gameLoop() {
+      try {
+        const msg = tick();
+        if (msg) log(msg);
+        
+        render();
+        
+        if (done()) {
+          log('=== Tournament Complete ===');
+          setStatus('✓ Tournament finished!');
+          return;
+        }
+        
+        animId = requestAnimationFrame(gameLoop);
+      } catch (err) {
+        log('Loop error: ' + err.message, true);
+        setStatus('❌ Error in game loop', true);
+      }
+    }
+
+    startBtn.onclick = () => {
+      if (animId) cancelAnimationFrame(animId);
+      logEl.textContent = '';
+      
+      log('Starting tournament (mode=3, 2 games)...');
+      start(3, 2);
+      render();
+      
+      setStatus('✓ Running...');
+      startBtn.textContent = 'Restart';
+      gameLoop();
+    };
+  </script>
+</body>
+</html>

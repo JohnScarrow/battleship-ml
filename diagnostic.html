@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>WASM Diagnostic</title>
+  <style>
+    body { font-family: monospace; padding: 20px; background: #1e1e1e; color: #d4d4d4; }
+    pre { background: #2d2d2d; padding: 10px; border: 1px solid #444; }
+    .error { color: #f48771; }
+    .success { color: #89d185; }
+  </style>
+</head>
+<body>
+  <h1>WASM Diagnostic Test</h1>
+  <button id="test">Run Test</button>
+  <pre id="log"></pre>
+  
+  <script type="module">
+    const logEl = document.getElementById('log');
+    function log(msg, isError = false) {
+      const line = document.createElement('div');
+      line.textContent = msg;
+      line.className = isError ? 'error' : 'success';
+      logEl.appendChild(line);
+      console.log(msg);
+    }
+
+    document.getElementById('test').onclick = async () => {
+      logEl.innerHTML = '';
+      try {
+        log('1. Loading WASM module...');
+        const createModule = (await import('./dist/battleship.js')).default;
+        
+        log('2. Creating module instance...');
+        const mod = await createModule({
+          print: t => log(`  [WASM print] ${t}`),
+          printErr: t => log(`  [WASM error] ${t}`, true),
+        });
+        
+        log('3. Module created successfully');
+        log(`   - HEAPF32: ${typeof mod.HEAPF32}`);
+        log(`   - ccall: ${typeof mod.ccall}`);
+        log(`   - cwrap: ${typeof mod.cwrap}`);
+        
+        log('4. Wrapping C functions...');
+        const startTournament = mod.cwrap('startTournament', null, ['number','number']);
+        const tickTournament = mod.cwrap('tickTournament', 'string', []);
+        const isTournamentDone = mod.cwrap('isTournamentDone', 'number', []);
+        const getBoardSnapshot = mod.cwrap('getBoardSnapshot', 'number', []);
+        const getHeatmapSnapshot = mod.cwrap('getHeatmapSnapshot', 'number', []);
+        log('   All functions wrapped');
+        
+        log('5. Starting tournament...');
+        startTournament(3, 1);
+        log('   Tournament started (mode=3, rounds=1)');
+        
+        log('6. Getting initial board snapshot...');
+        const boardPtr = getBoardSnapshot();
+        log(`   Board pointer: ${boardPtr}`);
+        
+        log('7. Creating Float32Array view...');
+        const boardData = new Float32Array(mod.HEAPF32.buffer, boardPtr, 100);
+        log(`   Array created, length: ${boardData.length}`);
+        log(`   First 20 values: ${Array.from(boardData.slice(0, 20)).map(v => v.toFixed(1)).join(', ')}`);
+        
+        log('8. Ticking 3 moves...');
+        for (let i = 0; i < 3; i++) {
+          const msg = tickTournament();
+          log(`   Move ${i+1}: ${msg}`);
+        }
+        
+        log('9. Getting updated board...');
+        const boardPtr2 = getBoardSnapshot();
+        const boardData2 = new Float32Array(mod.HEAPF32.buffer, boardPtr2, 100);
+        const hits = Array.from(boardData2).filter(v => v === 1).length;
+        const misses = Array.from(boardData2).filter(v => v === -1).length;
+        log(`   Hits: ${hits}, Misses: ${misses}`);
+        
+        log('10. Getting heatmap...');
+        const heatPtr = getHeatmapSnapshot();
+        const heatData = new Float32Array(mod.HEAPF32.buffer, heatPtr, 100);
+        const nonZero = Array.from(heatData).filter(v => v > 0).length;
+        log(`   Heatmap non-zero cells: ${nonZero}`);
+        log(`   Sample values: ${Array.from(heatData.slice(0, 10)).map(v => v.toFixed(3)).join(', ')}`);
+        
+        log('\n✅ ALL TESTS PASSED!');
+        
+      } catch (err) {
+        log(`❌ ERROR: ${err.message}`, true);
+        log(err.stack, true);
+      }
+    };
+  </script>
+</body>
+</html>

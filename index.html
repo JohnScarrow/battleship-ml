@@ -9,7 +9,7 @@
       .boards-row { display: flex; flex-direction: row; gap: 40px; justify-content: center; }
       .board-container { display: flex; flex-direction: column; align-items: center; }
       .board-container h3 { margin: 0 0 10px 0; font-size: 16px; text-align: center; }
-      canvas { border:1.5px solid #333; background:#0b0e12; max-width: 100vw; height: auto; width: 400px; }
+      canvas { border:1.5px solid #333; background:#0b0e12; max-width: 100%; height: auto; width: 100%; }
       .stats { background:#0a0d11; padding:10px 18px; border:1px solid #333; margin-top: 10px; font-size: 13px; border-radius: 6px; }
       .stats div { margin: 4px 0; }
       .controls-row { display: flex; flex-direction: row; gap: 18px; align-items: flex-end; flex-wrap: wrap; margin-bottom: 8px; }
@@ -260,9 +260,13 @@
             renderBoard.hasRendered = true;
           }
           
-          // Render both boards
-          renderBoardToCanvas(ctx1, data1, hdata1, canvas1.width, canvas1.height);
-          renderBoardToCanvas(ctx2, data2, hdata2, canvas2.width, canvas2.height);
+          // Render both boards using the visible (CSS) size so drawing matches layout
+          const w1 = canvas1.clientWidth || canvas1.width;
+          const h1 = canvas1.clientHeight || canvas1.height;
+          const w2 = canvas2.clientWidth || canvas2.width;
+          const h2 = canvas2.clientHeight || canvas2.height;
+          renderBoardToCanvas(ctx1, data1, hdata1, w1, h1);
+          renderBoardToCanvas(ctx2, data2, hdata2, w2, h2);
           
           // Count stats for each board
           let hits1 = 0, misses1 = 0;
@@ -652,12 +656,20 @@
       
       // Draw initial empty boards to show canvas is working
       function drawInitialBoards() {
-        [ctx1, ctx2].forEach(ctx => {
+        // Use the displayed client size so the placeholder scales with container
+        [[canvas1, ctx1], [canvas2, ctx2]].forEach(([canvas, ctx]) => {
+          const dpr = window.devicePixelRatio || 1;
+          const cw = canvas.clientWidth || 400;
+          const ch = canvas.clientHeight || cw;
+          // size the drawing buffer
+          canvas.width = Math.floor(cw * dpr);
+          canvas.height = Math.floor(ch * dpr);
+          ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+          // Clear and draw grid based on CSS pixels
           ctx.fillStyle = '#0b0e12';
-          ctx.fillRect(0, 0, 400, 400);
-          
-          // Draw grid
-          const size = 10, cell = 40;
+          ctx.fillRect(0, 0, cw, ch);
+          const size = 10, cell = cw / size;
           for (let r = 0; r < size; r++) {
             for (let c = 0; c < size; c++) {
               ctx.fillStyle = '#1a1d24';
@@ -667,14 +679,27 @@
               ctx.strokeRect(c * cell, r * cell, cell, cell);
             }
           }
-          
           // Add "Ready" text
           ctx.fillStyle = '#888';
           ctx.font = 'bold 24px monospace';
           ctx.textAlign = 'center';
-          ctx.fillText('Click Start', 200, 200);
+          ctx.fillText('Click Start', cw / 2, ch / 2);
         });
       }
+
+      // Keep canvas drawing buffers sized to the display size (handles hi-dpi)
+      function resizeCanvases() {
+        const dpr = window.devicePixelRatio || 1;
+        [[canvas1, ctx1], [canvas2, ctx2]].forEach(([canvas, ctx]) => {
+          const cw = canvas.clientWidth || 400;
+          const ch = canvas.clientHeight || cw;
+          canvas.width = Math.floor(cw * dpr);
+          canvas.height = Math.floor(ch * dpr);
+          ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        });
+      }
+
+      window.addEventListener('resize', function() { resizeCanvases(); renderBoard(); });
       
       // Initialize boards on load
       drawInitialBoards();

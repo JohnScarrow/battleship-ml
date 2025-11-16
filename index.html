@@ -305,7 +305,7 @@
         // Allow speed override via slider
         const sliderRate = Number(speedSlider.value) || 60;
         speedVal.textContent = sliderRate;
-        const finalRate = Math.min(sliderRate, totalGames >= 50 ? 30 : 60);
+        const finalRate = Math.min(sliderRate, totalGames >= 25 ? 30 : 60);
         let phases = [
           { rate: 2,  durationMs: 3000 },  // slow to savor
           { rate: 8,  durationMs: 3000 },

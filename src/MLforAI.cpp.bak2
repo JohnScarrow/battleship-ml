@@ -644,7 +644,6 @@ void monteCarloProbabilities(const char boardView[NUM_ROWS][NUM_COLS],
     int counts[NUM_ROWS][NUM_COLS] = {0};
     srand(static_cast<unsigned int>(time(nullptr)));
 
-#ifndef __EMSCRIPTEN__
     // If CUDA is available at runtime, prefer GPU path (mc_cuda provides cudaAvailable())
     extern int cudaAvailable();
     extern void monteCarloProbabilitiesGPU(const char boardView[NUM_ROWS][NUM_COLS], const int remaining[NUM_SHIPS], int iterations, int outCounts[NUM_ROWS * NUM_COLS]);
@@ -655,10 +654,7 @@ void monteCarloProbabilities(const char boardView[NUM_ROWS][NUM_COLS],
         for (int r = 0; r < NUM_ROWS; ++r) for (int c = 0; c < NUM_COLS; ++c) counts[r][c] = flatCounts[r*NUM_COLS + c];
         // fall through to normalization below
     } else {
-#else
-    // WASM build - CUDA not available, use CPU path only
-    {
-#endif
+
         // Precompute list of ship sizes to place
         vector<int> ships;
         for (int i = 0; i < NUM_SHIPS; ++i) if (remaining[i] > 0) ships.push_back(remaining[i]);

@@ -1,0 +1,44 @@
+:root{
+  --bg: #0b0e12;
+  --cell-bg: #1a1d24;
+  --hit: #4caf50;
+  --miss: #e53935;
+  --heat: 0,140,255;
+  --grid: #4a4f57;
+}
+
+/* WarGames theme overrides */
+.wargames {
+  --bg: #041206;
+  --cell-bg: #001100;
+  --hit: #00ff88;
+  --miss: #ff0033;
+  --heat: 0,255,80;
+  --grid: #003300;
+  color: #9aff9a !important;
+  background: #041206 !important;
+}
+
+/* Overlay modal for the easter egg */
+.wg-overlay {
+  position: fixed; inset: 0; display:flex; align-items:center; justify-content:center; z-index:2000;
+  background: rgba(0,0,0,0.66);
+}
+.wg-modal {
+  background: rgba(0,10,0,0.95); border: 2px solid #006600; padding: 22px; width: 520px; max-width: 92%; color: #bfffbf; font-family: monospace; border-radius: 8px;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.6);
+}
+.wg-title { font-size: 20px; margin-bottom: 8px; color: #7fff7f; }
+.wg-text { font-size: 16px; min-height: 48px; margin-bottom: 12px; white-space: pre-wrap; }
+.wg-actions { display:flex; gap:12px; justify-content:flex-end; }
+.wg-btn { background: #003300; color: #caffc4; border:1px solid #007700; padding: 8px 12px; border-radius:6px; cursor:pointer; }
+.wg-btn:hover { background:#005500; }
+
+/* floating toggle */
+.wg-toggle {
+  position: fixed; right: 12px; bottom: 12px; z-index: 1500; background: rgba(0,40,0,0.9); color:#bfffbf; border:1px solid #006600; padding:8px 10px; border-radius:6px; cursor:pointer; font-family:monospace;
+}
+
+/* small typing caret effect */
+.wg-caret::after { content: "_"; opacity: 0.9; animation: blink 1s steps(1) infinite; }
+@keyframes blink { 50% { opacity: 0 } }

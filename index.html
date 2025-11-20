@@ -39,7 +39,7 @@
         #log { font-size: 12px; padding: 0 8px 8px 8px; }
       }
     </style>
-    </style>
+    <link rel="stylesheet" href="./wargames.css" />
   </head>
   <body>
     <h1 style="margin-bottom: 4px;">Battleship ML (C++ → WebAssembly)</h1>
@@ -151,6 +151,18 @@
       const heat2 = mod.cwrap('getPlayer2HeatmapSnapshot', 'number', []);
       const setAIWeights = mod.cwrap('setAIWeightsFromArray', null, ['number']);
       const getAIWeights = mod.cwrap('getAIWeightsToArray', null, ['number']);
+      // Optional: player interaction exports (You vs AI)
+      let makePlayerMove = null;
+      let isPlayerTurn = null;
+      let advanceAITurn = null;
+      try {
+        makePlayerMove = mod.cwrap('makePlayerMove', 'number', ['number','number']);
+        isPlayerTurn = mod.cwrap('isPlayerTurn', 'number', []);
+        advanceAITurn = mod.cwrap('advanceAITurn', 'void', []);
+      } catch (e) {
+        // Not all builds export player move functions; fail gracefully
+        console.warn('Player move functions not available in this build:', e);
+      }
 
       const canvas1 = document.getElementById('board1');
       const canvas2 = document.getElementById('board2');
@@ -193,7 +205,14 @@
         const size = 10, cell = width / size;
         
         // Clear with dark background
-        ctx.fillStyle = '#0b0e12'; 
+          const csVars = getComputedStyle(document.documentElement);
+          const bgCol = (csVars.getPropertyValue('--bg') || '#0b0e12').trim();
+          const cellBgCol = (csVars.getPropertyValue('--cell-bg') || '#1a1d24').trim();
+          const hitCol = (csVars.getPropertyValue('--hit') || '#4caf50').trim();
+          const missCol = (csVars.getPropertyValue('--miss') || '#e53935').trim();
+          const heatBase = (csVars.getPropertyValue('--heat') || '0,140,255').trim();
+          const gridCol = (csVars.getPropertyValue('--grid') || '#4a4f57').trim();
+          ctx.fillStyle = bgCol;
         ctx.fillRect(0, 0, width, height);
         
         for (let r = 0; r < size; r++) {
@@ -203,29 +222,29 @@
             const hv = hdata[idx];
             
             // Draw cell background (empty cells get a slight gray to show grid)
-            ctx.fillStyle = '#1a1d24';
+            ctx.fillStyle = cellBgCol;
             ctx.fillRect(c * cell + 1, r * cell + 1, cell - 2, cell - 2);
             
             // Heatmap overlay for untouched cells
             if (v === 0 && hv > 0) {
               const alpha = 0.15 + 0.65 * hv;
-              ctx.fillStyle = `rgba(0,140,255,${alpha.toFixed(3)})`;
+              ctx.fillStyle = `rgba(${heatBase},${alpha.toFixed(3)})`;
               ctx.fillRect(c * cell + 1, r * cell + 1, cell - 2, cell - 2);
             }
             
             // Hits - bright green
             if (v === 1) { 
-              ctx.fillStyle = '#4caf50'; 
+              ctx.fillStyle = hitCol;
               ctx.fillRect(c * cell + 1, r * cell + 1, cell - 2, cell - 2);
             } 
             // Misses - red
             else if (v === -1) { 
-              ctx.fillStyle = '#e53935'; 
+              ctx.fillStyle = missCol;
               ctx.fillRect(c * cell + 1, r * cell + 1, cell - 2, cell - 2);
             }
             
             // Visible grid lines
-            ctx.strokeStyle = '#4a4f57'; 
+            ctx.strokeStyle = gridCol; 
             ctx.lineWidth = 1;
             ctx.strokeRect(c * cell, r * cell, cell, cell);
           }
@@ -500,6 +519,33 @@
       };
 
       // Preset handling with localStorage persistence
+      // Player click handling: allow user to click the opponent board when in You vs AI mode
+      (function(){
+        canvas2.addEventListener('click', function(e){
+          try {
+            const rect = canvas2.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const y = e.clientY - rect.top;
+            const size = 10;
+            const col = Math.min(size-1, Math.max(0, Math.floor(x / (rect.width / size))));
+            const row = Math.min(size-1, Math.max(0, Math.floor(y / (rect.height / size))));
+            if (!isPlayerTurn || !makePlayerMove) { appendLog('[Player moves not enabled in this build]'); return; }
+            if (!isPlayerTurn()) { appendLog('[Not your turn]'); return; }
+            const res = makePlayerMove(row, col);
+            // 0=invalid,1=miss,2=hit,3=sunk
+            if (res === 0) { appendLog(`[Invalid move at ${row},${col}]`); return; }
+            appendLog(`[Player shot at ${row},${col} => ${res===1?'miss':res===2?'hit':'sunk'}]`);
+            renderBoard();
+            // Allow AI to take one turn after a short delay
+            setTimeout(function(){ try { if (advanceAITurn) { advanceAITurn(); renderBoard(); appendLog('[AI took its turn]'); } } catch(e){ console.error(e); } }, 180);
+          } catch (err) { console.error('Error handling player click:', err); }
+        });
+
+        // show crosshair cursor in You vs AI mode
+        function updateCanvasCursor() { canvas2.style.cursor = (Number(modeSel.value) === 2) ? 'crosshair' : 'default'; }
+        modeSel.addEventListener('change', updateCanvasCursor);
+        updateCanvasCursor();
+      })();
       const PRESET_KEY = 'battleship_presets_v1';
       // Default built-in presets
       const builtinPresets = {
@@ -704,5 +750,6 @@
       // Initialize boards on load
       drawInitialBoards();
     </script>
+    <script type="module" src="./wargames.js"></script>
   </body>
 </html>

@@ -54,9 +54,6 @@ struct RoundState {
     const float* getPlayer1Heatmap(); // P1's targeting heatmap
     const float* getPlayer2Heatmap(); // P2's targeting heatmap
     bool isFinished() const { return gameOver; }
-    int makePlayerMove(int row, int col);
-    int isPlayerTurn() const;
-    void advanceAITurn();
     int winnerP1() const { return playerStats.won ? 1 : 0; }
     int winnerP2() const { return computerStats.won ? 1 : 0; }
 };

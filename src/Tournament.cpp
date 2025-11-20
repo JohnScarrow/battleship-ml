@@ -313,3 +313,79 @@ const float* Tournament::getPlayer1Heatmap() {
 const float* Tournament::getPlayer2Heatmap() {
     return current.getPlayer2Heatmap();
 }
+
+// Player move handling - allows human to click on board
+int RoundState::makePlayerMove(int row, int col) {
+    // Only allow if mode=2 (player vs AI), turn=0 (player's turn), not game over, and valid cell
+    if (mode != 2 || turn != 0 || gameOver) return 0;
+    if (row < 0 || row >= NUM_ROWS || col < 0 || col >= NUM_COLS) return 0;
+    if (!checkShotIsAvailable(computerBoard, row, col)) return 0; // already shot
+
+    // Execute the shot on the computer's board
+    int res = updateBoard(computerBoard, row, col, computerShipSizes);
+    bool sunk = false;
+
+    if (res != -1) {
+        sunk = updateShipSize(computerShipSizes, res);
+        playerStats.hits++;
+        liveHits[row][col]++;
+    } else {
+        playerStats.misses++;
+        liveMisses[row][col]++;
+    }
+    playerStats.totalShots++;
+
+    playerStats.hitMissRatio = playerStats.totalShots ?
+        (100.0 * playerStats.hits / playerStats.totalShots) : 0.0;
+
+    // Build view and update live probabilities
+    char view[NUM_ROWS][NUM_COLS];
+    for (int r = 0; r < NUM_ROWS; ++r) {
+        for (int c = 0; c < NUM_COLS; ++c) {
+            if (liveHits[r][c] > 0) view[r][c] = 'X';
+            else if (liveMisses[r][c] > 0) view[r][c] = 'm';
+            else view[r][c] = '-';
+        }
+    }
+    computePlacementProbabilities(view, computerShipSizes, liveProb);
+
+    // Log
+    {
+        std::ostringstream oss;
+        oss << "Player fires (" << row << "," << col << ")";
+        if (res != -1) oss << " -> HIT" << (sunk ? " + SUNK" : "");
+        else oss << " -> miss";
+        lastLog = oss.str();
+    }
+
+    // Update player targeting state
+    updateTargetStateAfterResult(p1Target, computerBoard, row, col, res, sunk, computerShipSizes);
+
+    // Check win
+    if (isWinner(computerShipSizes)) {
+        gameOver = true;
+        playerStats.won = true;
+        computerStats.won = false;
+        lastLog = "Player wins!";
+        return res != -1 ? 2 : 1; // 2=hit, 1=miss
+    }
+
+    turnCount++;
+    turn = 1; // switch to AI
+
+    // Return: 1=miss, 2=hit, 3=sunk ship
+    if (sunk) return 3;
+    if (res != -1) return 2;
+    return 1;
+}
+
+int RoundState::isPlayerTurn() const {
+    return (mode == 2 && turn == 0 && !gameOver) ? 1 : 0;
+}
+
+void RoundState::advanceAITurn() {
+    // Force the AI to take a turn (call tick once if it's AI's turn)
+    if (mode == 2 && turn == 1 && !gameOver) {
+        tick();
+    }
+}

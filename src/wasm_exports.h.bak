@@ -24,14 +24,6 @@ const float* getPlayer2HeatmapSnapshot();
 void setAIWeightsFromArray(const float* arr);
 void getAIWeightsToArray(float* outArr);
 
-// Player move handling for interactive play
-// Returns: 0=invalid/not-your-turn, 1=valid-miss, 2=valid-hit, 3=valid-sunk-ship
-int makePlayerMove(int row, int col);
-// Check if it's the player's turn (mode=2 and turn=0)
-int isPlayerTurn();
-// Force AI to take its turn (for mode=2 after player moved)
-void advanceAITurn();
-
 #ifdef __cplusplus
 }
 #endif

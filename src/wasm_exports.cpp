@@ -90,3 +90,16 @@ extern "C" void getAIWeightsToArray(float* outArr) {
     outArr[14] = static_cast<float>(w.mcBlendRatio);
     outArr[15] = static_cast<float>(w.mcBlendThresholdCells);
 }
+
+// Player move handling
+extern "C" int makePlayerMove(int row, int col) {
+    return gTournament.current.makePlayerMove(row, col);
+}
+
+extern "C" int isPlayerTurn() {
+    return gTournament.current.isPlayerTurn();
+}
+
+extern "C" void advanceAITurn() {
+    gTournament.current.advanceAITurn();
+}

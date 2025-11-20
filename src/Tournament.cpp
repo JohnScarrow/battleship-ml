@@ -42,10 +42,13 @@ void RoundState::reset(int mode_, int round_) {
     // Learning arrays reset
     std::memset(hitCount, 0, sizeof(hitCount));
     std::memset(missCount, 0, sizeof(missCount));
-    std::memset(liveHits, 0, sizeof(liveHits));
-    std::memset(liveMisses, 0, sizeof(liveMisses));
+    std::memset(liveHitsP1, 0, sizeof(liveHitsP1));
+    std::memset(liveMissesP1, 0, sizeof(liveMissesP1));
+    std::memset(liveHitsP2, 0, sizeof(liveHitsP2));
+    std::memset(liveMissesP2, 0, sizeof(liveMissesP2));
     std::memset(hitProb, 0, sizeof(hitProb));
-    std::memset(liveProb, 0, sizeof(liveProb));
+    std::memset(liveProbP1, 0, sizeof(liveProbP1));
+    std::memset(liveProbP2, 0, sizeof(liveProbP2));
 
     // Learn from prior log if available (native runs only; in browser omit file I/O)
     // learnFromLog("battleship.log", hitCount, missCount);
@@ -88,7 +91,9 @@ const char* RoundState::tick() {
 
     if (currentType == COMPUTER) {
         TargetState &ts = (turn == 0 ? p1Target : p2Target);
-        std::tie(row, col) = chooseAIMove(targetBoard, hitProb, liveProb, ts, targetShipSizes, turnCount);
+        // Choose which liveProb to use depending on which player is choosing
+        double (*livePtr)[NUM_COLS] = (turn == 0) ? liveProbP1 : liveProbP2;
+        std::tie(row, col) = chooseAIMove(targetBoard, hitProb, livePtr, ts, targetShipSizes, turnCount);
         if (!checkShotIsAvailable(targetBoard, row, col)) {
             ts.active = false; ts.oriented = false; ts.orientation = 0; ts.queue.clear();
             std::tie(row, col) = getSmartMove(targetBoard, hitProb);
@@ -107,34 +112,55 @@ const char* RoundState::tick() {
     if (res != -1) {
         sunk = updateShipSize(targetShipSizes, res);
         currentStats.hits++;
-        liveHits[row][col]++;
+        // record observation for the shooter: if turn==0, Player1 observed this hit on Player2
+        if (turn == 0) liveHitsP1[row][col]++;
+        else liveHitsP2[row][col]++;
     } else {
         currentStats.misses++;
-        liveMisses[row][col]++;
+        if (turn == 0) liveMissesP1[row][col]++;
+        else liveMissesP2[row][col]++;
     }
     currentStats.totalShots++;
     currentStats.hitMissRatio = currentStats.totalShots ?
         (100.0 * currentStats.hits / currentStats.totalShots) : 0.0;
 
-    // Build view from live hits/misses: 'X' for hit, 'm' for miss, '-' unknown
+    // Update both players' heatmaps from their own observations
+    // Player1 observes the computer board; Player2 observes the player board.
+    char viewP1[NUM_ROWS][NUM_COLS];
+    char viewP2[NUM_ROWS][NUM_COLS];
+    for (int r = 0; r < NUM_ROWS; ++r) {
+        for (int c = 0; c < NUM_COLS; ++c) {
+            viewP1[r][c] = (liveHitsP1[r][c] > 0) ? 'X' : (liveMissesP1[r][c] > 0 ? 'm' : '-');
+            viewP2[r][c] = (liveHitsP2[r][c] > 0) ? 'X' : (liveMissesP2[r][c] > 0 ? 'm' : '-');
+        }
+    }
+    // Player1's probabilities target the computer's ships
+    computePlacementProbabilities(viewP1, computerShipSizes, liveProbP1);
+    // Player2's probabilities target the player's ships
+    computePlacementProbabilities(viewP2, playerShipSizes, liveProbP2);
+    
+    // For MC blending, use the current shooter's view and remaining cells
     char view[NUM_ROWS][NUM_COLS];
     int remainingCells = 0;
     for (int i = 0; i < NUM_SHIPS; ++i) remainingCells += targetShipSizes[i];
     for (int r = 0; r < NUM_ROWS; ++r) {
         for (int c = 0; c < NUM_COLS; ++c) {
-            if (liveHits[r][c] > 0) view[r][c] = 'X';
-            else if (liveMisses[r][c] > 0) view[r][c] = 'm';
-            else view[r][c] = '-';
+            if (turn == 0) {
+                view[r][c] = viewP1[r][c];
+            } else {
+                view[r][c] = viewP2[r][c];
+            }
         }
     }
-    computePlacementProbabilities(view, targetShipSizes, liveProb);
     // Endgame Monte-Carlo blend when few ship cells remain
     if (remainingCells <= gAIWeights.mcBlendThresholdCells) {
         double mcMap[NUM_ROWS][NUM_COLS];
         monteCarloProbabilities(view, targetShipSizes, gAIWeights.mcIterations, mcMap);
         for (int r = 0; r < NUM_ROWS; ++r)
-            for (int c = 0; c < NUM_COLS; ++c)
-                liveProb[r][c] = (1.0 - gAIWeights.mcBlendRatio) * liveProb[r][c] + gAIWeights.mcBlendRatio * mcMap[r][c];
+            for (int c = 0; c < NUM_COLS; ++c) {
+                if (turn == 0) liveProbP1[r][c] = (1.0 - gAIWeights.mcBlendRatio) * liveProbP1[r][c] + gAIWeights.mcBlendRatio * mcMap[r][c];
+                else liveProbP2[r][c] = (1.0 - gAIWeights.mcBlendRatio) * liveProbP2[r][c] + gAIWeights.mcBlendRatio * mcMap[r][c];
+            }
     }
 
     // Log message
@@ -186,7 +212,10 @@ const float* RoundState::getHeatmapSnapshot() {
     // Return the live probability heatmap (0.0-1.0)
     for (int r = 0; r < NUM_ROWS; ++r) {
         for (int c = 0; c < NUM_COLS; ++c) {
-            HEATMAP_BUFFER[r * NUM_COLS + c] = static_cast<float>(liveProb[r][c]);
+            // Provide the 'global' liveProb for debugging - average of both players' maps
+            double val = 0.0;
+            val = 0.5 * (liveProbP1[r][c] + liveProbP2[r][c]);
+            HEATMAP_BUFFER[r * NUM_COLS + c] = static_cast<float>(val);
         }
     }
     return HEATMAP_BUFFER;
@@ -221,20 +250,20 @@ const float* RoundState::snapshotPlayer2Board() {
 }
 
 const float* RoundState::getPlayer1Heatmap() {
-    // P1's targeting heatmap (simplified - use global for now)
+    // P1's targeting heatmap
     for (int r = 0; r < NUM_ROWS; ++r) {
         for (int c = 0; c < NUM_COLS; ++c) {
-            HEAT1_BUFFER[r * NUM_COLS + c] = static_cast<float>(liveProb[r][c]);
+            HEAT1_BUFFER[r * NUM_COLS + c] = static_cast<float>(liveProbP1[r][c]);
         }
     }
     return HEAT1_BUFFER;
 }
 
 const float* RoundState::getPlayer2Heatmap() {
-    // P2's targeting heatmap (simplified - use global for now)
+    // P2's targeting heatmap
     for (int r = 0; r < NUM_ROWS; ++r) {
         for (int c = 0; c < NUM_COLS; ++c) {
-            HEAT2_BUFFER[r * NUM_COLS + c] = static_cast<float>(liveProb[r][c]);
+            HEAT2_BUFFER[r * NUM_COLS + c] = static_cast<float>(liveProbP2[r][c]);
         }
     }
     return HEAT2_BUFFER;
@@ -328,10 +357,10 @@ int RoundState::makePlayerMove(int row, int col) {
     if (res != -1) {
         sunk = updateShipSize(computerShipSizes, res);
         playerStats.hits++;
-        liveHits[row][col]++;
+        liveHitsP1[row][col]++;
     } else {
         playerStats.misses++;
-        liveMisses[row][col]++;
+        liveMissesP1[row][col]++;
     }
     playerStats.totalShots++;
 
@@ -342,12 +371,12 @@ int RoundState::makePlayerMove(int row, int col) {
     char view[NUM_ROWS][NUM_COLS];
     for (int r = 0; r < NUM_ROWS; ++r) {
         for (int c = 0; c < NUM_COLS; ++c) {
-            if (liveHits[r][c] > 0) view[r][c] = 'X';
-            else if (liveMisses[r][c] > 0) view[r][c] = 'm';
+            if (liveHitsP1[r][c] > 0) view[r][c] = 'X';
+            else if (liveMissesP1[r][c] > 0) view[r][c] = 'm';
             else view[r][c] = '-';
         }
     }
-    computePlacementProbabilities(view, computerShipSizes, liveProb);
+    computePlacementProbabilities(view, computerShipSizes, liveProbP1);
 
     // Log
     {

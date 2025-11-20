@@ -10,6 +10,15 @@
       .board-container { display: flex; flex-direction: column; align-items: center; }
       .board-container h3 { margin: 0 0 10px 0; font-size: 16px; text-align: center; }
       canvas { border:1.5px solid #333; background:#0b0e12; max-width: 100%; height: auto; width: 100%; }
+      .canvas-wrap { position: relative; display: inline-block; }
+      .board-badge { position: absolute; top: 10px; left: 10px; background: rgba(0,10,0,0.9); color: #dfffe0; padding: 8px 12px; border-radius: 8px; font-size: 13px; border:1px solid rgba(0,200,100,0.12); display: none; z-index: 5; pointer-events: none; transform-origin: left top; animation: pulse 2s infinite; }
+      .board-badge .label { display:inline-block; margin-right:8px; }
+      .board-badge .restart-btn { background: #003300; color: #caffc4; border:1px solid #007700; padding: 6px 8px; border-radius:6px; cursor:pointer; font-family:monospace; font-size:12px; pointer-events: auto; }
+      .board-badge .restart-btn:hover { background:#005500; }
+      @keyframes pulse { 0% { transform: scale(1); opacity: 1 } 50% { transform: scale(1.03); opacity: 0.92 } 100% { transform: scale(1); opacity: 1 } }
+      .board-highlight canvas { border: 2px solid #00ff88 !important; box-shadow: 0 6px 18px rgba(0,255,136,0.08); }
+      .board-tooltip { position: absolute; top: 56px; left: 10px; background: rgba(0,0,0,0.75); color:#dff; padding:6px 8px; border-radius:6px; font-size:12px; display:none; z-index:6; pointer-events:none; }
+      .board-toast { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); background: rgba(0,0,0,0.85); color:#fff; padding:8px 12px; border-radius:8px; font-size:16px; z-index:7; pointer-events:none; opacity:0; transition: opacity 160ms ease-in-out; }
       .stats { background:#0a0d11; padding:10px 18px; border:1px solid #333; margin-top: 10px; font-size: 13px; border-radius: 6px; }
       .stats div { margin: 4px 0; }
       .controls-row { display: flex; flex-direction: row; gap: 18px; align-items: flex-end; flex-wrap: wrap; margin-bottom: 8px; }
@@ -60,7 +69,14 @@
         </div>
         <div class="board-container">
           <h3>Player 2 Board (AI Targeting)</h3>
-          <canvas id="board2" width="400" height="400"></canvas>
+          <div class="canvas-wrap" id="board2-wrap">
+            <canvas id="board2" width="400" height="400"></canvas>
+            <div class="board-badge" id="board2-badge">
+              <span class="label">Opponent — Click to fire</span>
+              <button id="board2-restart" class="restart-btn">Restart</button>
+            </div>
+            <div class="board-tooltip" id="board2-tip">Click any square on this board to fire at the opponent.</div>
+          </div>
           <div class="stats" id="stats2">
             <div>Hits: <span id="p2-hits">0</span></div>
             <div>Misses: <span id="p2-misses">0</span></div>
@@ -84,9 +100,11 @@
             <button id="start">Start</button>
             <button id="step" disabled>Step</button>
             <button id="resume" disabled>Resume</button>
+            <button id="playVsAIBtn">Play vs AI (Browser)</button>
           </div>
           <label>Speed: <span id="speedVal">60</span> ticks/sec</label>
           <input id="speedSlider" type="range" min="1" max="200" value="60" />
+          <label><input id="showHeatmap" type="checkbox" checked/> Show AI Heatmap</label>
         </div>
         <div class="controls-group">
           <strong>AI Quick Tuning</strong>
@@ -100,7 +118,7 @@
           <input id="mcSlider" type="range" min="0.00" max="1.00" step="0.01" value="0.50" />
           <button id="applyAI">Apply AI Weights</button>
           <button id="quickTrial">Quick 20-game Trial</button>
-          <button id="applyBest">Use Best from tuner_output.csv</button>
+          <button id="applyBest">Use Best from Would_U_Like_2_Play_A_Game.csv</button>
         </div>
         <div class="controls-group">
           <label>Presets</label>
@@ -175,6 +193,77 @@
       const speedSlider = document.getElementById('speedSlider');
       const speedVal = document.getElementById('speedVal');
 
+      const playVsAIBtn = document.getElementById('playVsAIBtn');
+      const board2Wrap = document.getElementById('board2-wrap');
+      const board2Badge = document.getElementById('board2-badge');
+
+      function updateOpponentIndicator(){
+        const show = (Number(modeSel.value) === 2) || !!window._useFallback;
+        if (board2Badge) board2Badge.style.display = show ? 'block' : 'none';
+        if (board2Wrap) {
+          if (show) board2Wrap.classList.add('board-highlight'); else board2Wrap.classList.remove('board-highlight');
+        }
+      }
+      // update when mode changes
+      modeSel.addEventListener('change', () => {
+        // If user switches away from You vs AI mode while fallback is enabled,
+        // automatically disable the fallback so the badge doesn't confuse casual users.
+        if (Number(modeSel.value) !== 2 && window._useFallback) {
+          window.enableFallbackGame(false);
+          if (playVsAIBtn) { playVsAIBtn.textContent = 'Play vs AI (Browser)'; playVsAIBtn.style.border = ''; }
+          appendLog('[Browser fallback auto-disabled because mode changed]');
+        }
+        updateOpponentIndicator();
+      });
+      // init
+      setTimeout(updateOpponentIndicator, 20);
+      // Tooltip logic: show brief tooltip when hovering the board wrap
+      if (board2Wrap) {
+        const tip = document.getElementById('board2-tip');
+        board2Wrap.addEventListener('mouseenter', () => { if (tip) tip.style.display = 'block'; });
+        board2Wrap.addEventListener('mouseleave', () => { if (tip) tip.style.display = 'none'; });
+      }
+
+      // Restart button behavior (works for fallback and attempts WASM restart)
+      const board2Restart = document.getElementById('board2-restart');
+      if (board2Restart) {
+        board2Restart.addEventListener('click', (e) => {
+          e.stopPropagation();
+          e.preventDefault();
+          // If using fallback, reset it
+          if (window._useFallback && window.fallbackGame) {
+            window.fallbackGame.reset();
+            appendLog('[Browser fallback game restarted]');
+            renderBoard();
+            return;
+          }
+          // Otherwise attempt a WASM restart for You vs AI mode
+          try {
+            const currentMode = Number(modeSel.value);
+            if (typeof start === 'function') {
+              start(currentMode, Number(gamesInput.value) || 1);
+              appendLog('[WASM tournament restarted]');
+              renderBoard();
+              return;
+            }
+          } catch (err) { console.warn('WASM restart failed', err); }
+          appendLog('[Restart unavailable]');
+        });
+      }
+
+      // Toast helper for significant events (sunk)
+      function showBoardToast(msg, ms=1400){
+        try {
+          const wrap = document.getElementById('board2-wrap');
+          if (!wrap) return;
+          const t = document.createElement('div'); t.className = 'board-toast'; t.textContent = msg;
+          wrap.appendChild(t);
+          // force reflow then show
+          requestAnimationFrame(()=>{ t.style.opacity = '1'; });
+          setTimeout(()=>{ t.style.opacity = '0'; setTimeout(()=>{ t.remove(); }, 220); }, ms);
+        } catch (e) { console.warn('showBoardToast error', e); }
+      }
+
       const alphaSlider = document.getElementById('alphaSlider');
       const alphaVal = document.getElementById('alphaVal');
       const placeSlider = document.getElementById('placeSlider');
@@ -189,6 +278,55 @@
       const presetSel = document.getElementById('presetSel');
       const savePresetBtn = document.getElementById('savePreset');
       const tunerSummary = document.getElementById('tunerSummary');
+      const showHeatmapChk = document.getElementById('showHeatmap');
+
+      // default heatmap visibility
+      window._showHeatmap = showHeatmapChk ? showHeatmapChk.checked : true;
+      if (showHeatmapChk) {
+        showHeatmapChk.onchange = () => { window._showHeatmap = showHeatmapChk.checked; renderBoard(); };
+      }
+
+      if (playVsAIBtn) {
+        playVsAIBtn.onclick = () => {
+          const turningOn = !window._useFallback;
+          if (turningOn) {
+            // remember previous mode so we can restore it
+            window._prevMode = modeSel.value;
+            // ensure UI is in You vs AI mode for clarity
+            modeSel.value = '2';
+            window.enableFallbackGame(true);
+            // If WASM MLAI exports are available, initialize a You-vs-AI game so clicks are handled by MLAI
+            try {
+              if (makePlayerMove && isPlayerTurn && typeof start === 'function') {
+                start(2, 1);
+                appendLog('[WASM You-vs-AI session started for interactive play]');
+                // Run a few initialization ticks so the tournament/turn state is ready and
+                // `isPlayerTurn()` returns the correct state. This prevents needing to press Step.
+                try {
+                  for (let i = 0; i < 6; ++i) {
+                    if (isPlayerTurn && isPlayerTurn()) break;
+                    const msg = tick();
+                    if (msg) appendLog(msg);
+                    renderBoard();
+                  }
+                } catch (ee) { console.warn('Initialization ticks failed', ee); }
+              }
+            } catch (e) { console.warn('Failed to auto-start WASM session:', e); }
+            playVsAIBtn.textContent = 'Playing vs AI (Browser)';
+            playVsAIBtn.style.border = '2px solid #00aa00';
+            appendLog('[Browser fallback Play vs AI enabled]');
+          } else {
+            window.enableFallbackGame(false);
+            // restore previous mode if available
+            if (window._prevMode) { modeSel.value = window._prevMode; window._prevMode = null; }
+            playVsAIBtn.textContent = 'Play vs AI (Browser)';
+            playVsAIBtn.style.border = '';
+            appendLog('[Browser fallback Play vs AI disabled]');
+          }
+          try { updateCanvasCursor(); } catch(e){}
+          renderBoard();
+        };
+      }
 
       let p1Stats = { hits: 0, misses: 0, total: 0 };
       let p2Stats = { hits: 0, misses: 0, total: 0 };
@@ -225,8 +363,8 @@
             ctx.fillStyle = cellBgCol;
             ctx.fillRect(c * cell + 1, r * cell + 1, cell - 2, cell - 2);
             
-            // Heatmap overlay for untouched cells
-            if (v === 0 && hv > 0) {
+            // Heatmap overlay for untouched cells (toggleable)
+            if (window._showHeatmap && v === 0 && hv > 0) {
               const alpha = 0.15 + 0.65 * hv;
               ctx.fillStyle = `rgba(${heatBase},${alpha.toFixed(3)})`;
               ctx.fillRect(c * cell + 1, r * cell + 1, cell - 2, cell - 2);
@@ -253,18 +391,48 @@
 
       function renderBoard() {
         try {
+          // If using fallback JS game, render from that state instead of WASM
+          if (window._useFallback && window.fallbackGame) {
+            // But if WASM exports for player interaction exist, prefer WASM snapshots
+            // so the MLAI is used for move resolution and AI turns; otherwise use fallback snapshots.
+            if (!(makePlayerMove && isPlayerTurn && (typeof snap1 === 'function') && (typeof snap2 === 'function'))) {
+              const s = window.fallbackGame.getSnapshots();
+              const data1 = s.p1;
+              const hdata1 = s.h1;
+              const data2 = s.p2;
+              const hdata2 = s.h2;
+              const w1 = canvas1.clientWidth || canvas1.width;
+              const h1 = canvas1.clientHeight || canvas1.height;
+              const w2 = canvas2.clientWidth || canvas2.width;
+              const h2 = canvas2.clientHeight || canvas2.height;
+              renderBoardToCanvas(ctx1, data1, hdata1, w1, h1);
+              renderBoardToCanvas(ctx2, data2, hdata2, w2, h2);
+              // Update stats from fallback: p1 is opponent hits on player, p2 is player's hits on opponent
+              let hits1 = 0, misses1 = 0, hits2 = 0, misses2 = 0;
+              for (let i = 0; i < 100; i++) {
+                if (data1[i] === 1) hits1++; else if (data1[i] === -1) misses1++;
+                if (data2[i] === 1) hits2++; else if (data2[i] === -1) misses2++;
+              }
+              p1Stats = { hits: hits1, misses: misses1, total: hits1 + misses1 };
+              p2Stats = { hits: hits2, misses: misses2, total: hits2 + misses2 };
+              updateStats(1, p1Stats.hits, p1Stats.misses, p1Stats.total);
+              updateStats(2, p2Stats.hits, p2Stats.misses, p2Stats.total);
+              return;
+            }
+          }
+
           // Check if module memory is available
           if (!mod || !mod.HEAPF32) {
             console.warn("Module or HEAPF32 not ready");
             return;
           }
-          
+
           // Get Player 1's board and heatmap
           const ptr1 = snap1();
           const hptr1 = heat1();
           const data1 = new Float32Array(mod.HEAPF32.buffer, ptr1, 100);
           const hdata1 = new Float32Array(mod.HEAPF32.buffer, hptr1, 100);
-          
+
           // Get Player 2's board and heatmap
           const ptr2 = snap2();
           const hptr2 = heat2();
@@ -529,12 +697,42 @@
             const size = 10;
             const col = Math.min(size-1, Math.max(0, Math.floor(x / (rect.width / size))));
             const row = Math.min(size-1, Math.max(0, Math.floor(y / (rect.height / size))));
+            // If fallback JS game is enabled, route clicks to it — but prefer WASM exports when available
+            if (window._useFallback && window.fallbackGame) {
+              // If WASM exports for player interaction exist, use them so the MLAI handles moves
+              if (makePlayerMove && isPlayerTurn) {
+                if (!isPlayerTurn()) { appendLog('[Not your turn]'); return; }
+                const res = makePlayerMove(row, col);
+                // 0=invalid,1=miss,2=hit,3=sunk
+                if (res === 0) { appendLog(`[Invalid move at ${row},${col}]`); return; }
+                appendLog(`[Player shot at ${row},${col} => ${res===1?'miss':res===2?'hit':'sunk'}]`);
+                if (res === 3) { showBoardToast('Ship sunk!', 1600); }
+                renderBoard();
+                // Allow AI to take one turn after a short delay - prefer WASM advanceAITurn if available
+                setTimeout(function(){ try { if (advanceAITurn) { advanceAITurn(); } else { window.fallbackGame.advanceAITurn(); } renderBoard(); appendLog('[AI took its turn]'); } catch(e){ console.error(e); } }, 180);
+                return;
+              }
+
+              // Otherwise use pure JS fallback for player moves
+              if (!window.fallbackGame.isPlayerTurn()) { appendLog('[Not your turn]'); return; }
+              const res = window.fallbackGame.makePlayerMove(row, col);
+              // 0=invalid,1=miss,2=hit,3=sunk
+              if (res === 0) { appendLog(`[Invalid move at ${row},${col}]`); return; }
+              appendLog(`[Player shot at ${row},${col} => ${res===1?'miss':res===2?'hit':'sunk'}]`);
+              if (res === 3) { showBoardToast('Ship sunk!', 1600); }
+              renderBoard();
+              // Allow AI to take one turn after a short delay
+              setTimeout(function(){ try { if (advanceAITurn) { advanceAITurn(); renderBoard(); appendLog('[AI took its turn]'); } else { window.fallbackGame.advanceAITurn(); renderBoard(); appendLog('[AI took its turn]'); } } catch(e){ console.error(e); } }, 180);
+              return;
+            }
+
             if (!isPlayerTurn || !makePlayerMove) { appendLog('[Player moves not enabled in this build]'); return; }
             if (!isPlayerTurn()) { appendLog('[Not your turn]'); return; }
             const res = makePlayerMove(row, col);
             // 0=invalid,1=miss,2=hit,3=sunk
             if (res === 0) { appendLog(`[Invalid move at ${row},${col}]`); return; }
             appendLog(`[Player shot at ${row},${col} => ${res===1?'miss':res===2?'hit':'sunk'}]`);
+            if (res === 3) { showBoardToast('Ship sunk!', 1600); }
             renderBoard();
             // Allow AI to take one turn after a short delay
             setTimeout(function(){ try { if (advanceAITurn) { advanceAITurn(); renderBoard(); appendLog('[AI took its turn]'); } } catch(e){ console.error(e); } }, 180);
@@ -750,6 +948,7 @@
       // Initialize boards on load
       drawInitialBoards();
     </script>
+    <script src="./fallback_ai.js"></script>
     <script type="module" src="./wargames.js"></script>
   </body>
 </html>

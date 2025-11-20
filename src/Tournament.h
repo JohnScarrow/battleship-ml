@@ -27,9 +27,14 @@ struct RoundState {
     int hitCount[NUM_ROWS][NUM_COLS] = {0};
     int missCount[NUM_ROWS][NUM_COLS] = {0};
     double hitProb[NUM_ROWS][NUM_COLS] = {0};
-    int liveHits[NUM_ROWS][NUM_COLS] = {0};
-    int liveMisses[NUM_ROWS][NUM_COLS] = {0};
-    double liveProb[NUM_ROWS][NUM_COLS] = {0};
+    // Per-player live observation arrays: what each player has observed of the opponent
+    int liveHitsP1[NUM_ROWS][NUM_COLS] = {0};
+    int liveMissesP1[NUM_ROWS][NUM_COLS] = {0};
+    double liveProbP1[NUM_ROWS][NUM_COLS] = {0};
+
+    int liveHitsP2[NUM_ROWS][NUM_COLS] = {0};
+    int liveMissesP2[NUM_ROWS][NUM_COLS] = {0};
+    double liveProbP2[NUM_ROWS][NUM_COLS] = {0};
 
     // Targeting states
     TargetState p1Target{}, p2Target{};

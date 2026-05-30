@@ -1,122 +1,89 @@
-# Battleship ML - WebAssembly Demo
+# Battleship ML
 
-A machine learning Battleship game compiled to WebAssembly for browser visualization.
+A C++17 Battleship AI that minimizes shots-to-win by combining four probabilistic signals. Ships are placed biasedly, every shot is scored by blending a learned global heatmap, a live placement-coverage map, Monte Carlo sampling (CPU or CUDA), and tactical bonuses — all tunable via a multi-threaded CLI tuner with grid-search and online learning modes.
 
-This is a demo of battleship using different ML functions to minimize turns to victory.
+## How the AI Works
 
-## Features
+Every unshot cell is scored by blending four signals before each shot:
 
-- **AI vs AI tournaments** with configurable rounds
-- **Live heatmap visualization** showing AI probability calculations
-- **Progressive speed ramp** - starts slow, accelerates to max speed
-- **Pure C++ logic** compiled to WASM (no multithreading, runs sequentially)
+**1. Global heatmap** — hit/miss counts from logged past games are converted to per-cell probabilities. High-traffic cells get a persistent prior that survives across rounds in a tournament.
 
+**2. Live placement map** — enumerates every legal arrangement of the remaining ships on the current board and scores each cell by how many of those arrangements cover it. Updated every turn as ships are sunk.
 
-## Build Instructions
+**3. Monte Carlo sampling** — randomly samples thousands of legal ship placements and accumulates cell frequencies. Blended in when ≥ `mcBlendThresholdCells` unknown cells remain. Runs on the GPU when CUDA is available; falls back to CPU automatically.
 
-### WebAssembly (Browser Demo)
+**4. Tactical bonuses** (`AIWeights` in `src/MLforAI.h`):
+- Adjacent-hit bonus — strongly prefer cells next to a confirmed hit
+- Axis bonus — once a ship's orientation is known, extend along that line
+- Checkerboard parity — ships ≥2 cells long cannot be entirely on one parity; prune half the board in search mode
+- Ship-fit bias — penalize cells where no remaining ship can legally land
 
-Requires [Emscripten](https://emscripten.org/docs/getting_started/downloads.html):
+After a hit, a `TargetState` queue takes over and directs shots along the detected axis until the ship sinks, then the queue resets.
 
+## CUDA Monte Carlo Kernel
+
+`src/mc_cuda.cu` implements the GPU sampler using cuRAND and shared-memory atomics:
+
+- Each CUDA thread handles multiple placement samples independently
+- Per-block shared histogram (`s_hist[100]`) collects cell counts using `atomicAdd` in shared memory — avoids global memory contention during sampling
+- Block leaders flush shared histograms to global `d_counts` after synchronization
+- Kernel launch: `ceil(iterations / 256)` blocks × 256 threads, 400 bytes of shared memory per block
+- `cudaAvailable_impl()` checks device count at runtime; the stub in `mc_cuda_stub.cpp` returns 0 so the same binary works without CUDA installed
+
+## Parameter Tuner
+
+`src/tuner.cpp` provides two modes:
+
+**Grid search** — sweeps parameter ranges in parallel across threads, outputs CSV:
 ```bash
-# Build the WASM demo
-./build.sh
+./tuner games=1000 threads=8 \
+    alpha=0.65:0.05:0.85 \
+    place=1.0:0.5:2.0 \
+    adj=0.2:0.2:0.6 \
+    mc=0.0:0.5:0.5 \
+    > sweep.csv
 ```
+Each combination runs `games` CvC tournaments split across `threads` workers using `std::thread` + `std::atomic`. Output columns: `alphaEarly, placementHitMultiplier, adjHitBonus, mcBlendRatio, games, threads, p1_avg_shots, p2_avg_shots`.
 
-This generates:
-- `dist/battleship.js` - ES6 module wrapper
-- `dist/battleship.wasm` - Compiled C++ game logic
-
-### Native CLI Tuner (CPU & GPU)
-
-#### CPU-only build
-```bash
-g++ -O3 -std=c++17 -pthread -o tuner src/tuner.cpp src/MLforAI.cpp src/Tournament.cpp src/battleship.cpp
-```
-
-#### CUDA (GPU) build
-```bash
-# Requires CUDA toolkit (nvcc)
-./scripts/build_tuner_cuda.sh
-```
-This produces a `tuner` binary that will use GPU acceleration if a compatible CUDA device is detected at runtime.
-
-## Usage
-
-### Web Demo (Browser)
-
-```bash
-# Serve with Python
-python3 -m http.server 8000
-# Or with Node
-npx http-server -p 8000
-```
-Then open: http://localhost:8000
-
-### Native CLI Tuner (CPU/GPU)
-
-#### Parameter Sweep Example
-```bash
-./tuner games=1000 threads=8 alpha=0.7:0.05:0.9 place=1.0:0.5:2.0 adj=0.2:0.2:0.6 mc=0.0:0.5:0.5 > sweep.csv
-```
-This runs a grid search over the specified parameter ranges and outputs results to `sweep.csv`.
-
-#### Online Learning Example
+**Online learning** — updates weights after each game using a reward/penalize rule (minimize avg shots-to-win), prints progress every 50 games:
 ```bash
 ./tuner games=1000 online=1
 ```
-This enables online learning mode, where the AI weights are updated after each game to minimize shots-to-win. Final weights are printed at the end.
 
-#### GPU Acceleration
-- The CUDA build (`./scripts/build_tuner_cuda.sh`) produces a `tuner` binary that will automatically use GPU acceleration for Monte-Carlo sampling if a compatible CUDA device is detected at runtime.
-- No special command-line flag is needed; detection is automatic.
-- To confirm GPU is being used, look for a startup message or check performance (GPU runs are much faster for large `mcIterations`).
+## Build
 
-##### Example: Large MC sweep with GPU
+### Native (CPU)
 ```bash
-./tuner games=1000 threads=16 alpha=0.8 place=2.0 adj=0.2 mc=0.5 mcIterations=1600 > mc_gpu.csv
+g++ -O3 -std=c++17 -pthread -o tuner \
+    src/tuner.cpp src/MLforAI.cpp src/Tournament.cpp \
+    src/battleship.cpp src/mc_cuda_stub.cpp
 ```
 
-##### Example: Online learning with GPU
+### Native (CUDA)
 ```bash
-./tuner games=1000 online=1 mcIterations=1600
+# Requires CUDA toolkit (nvcc)
+./scripts/build_tuner_cuda.sh
+# Auto-detects GPU at runtime; falls back to CPU if no device found
 ```
 
-If no GPU is available, the binary will fall back to CPU mode automatically.
-
----
+### WebAssembly (browser visualization)
+```bash
+# Requires Emscripten
+./build.sh
+python3 -m http.server 8000   # open http://localhost:8000
+```
 
 ## Architecture
 
-- **C++ Core** (`src/`): Game logic, AI, tournament management
-- **WASM Exports** (`wasm_exports.cpp`): Five extern "C" functions:
-  - `startTournament(mode, rounds)` - Initialize tournament
-  - `tickTournament()` - Advance one move, return log string
-  - `isTournamentDone()` - Check if complete
-  - `getBoardSnapshot()` - Get 10×10 board state (floats)
-  - `getHeatmapSnapshot()` - Get 10×10 probability heatmap
-- **JavaScript** (`index.html`): Canvas rendering, animation loop, UI
-
-## Canvas Legend
-
-- 🟢 **Green** = Hit
-- 🔴 **Red** = Miss
-- 🔵 **Blue gradient** = AI probability heatmap (darker = higher probability)
-
-
-## Autoplay & Muted (URL parameters)
-
-The web demo supports two query parameters that can be appended to the demo URL to control automatic start and audio muting when embedded or loaded remotely.
-
-- `autoplay=1` — automatically starts the tournament using the current UI settings (mode, games, etc.). This behaves the same as clicking the **Start** button and will begin the animation loop unless Step Mode is enabled.
-- `muted=1` — mutes any audio elements on the page (if present) and sets a global flag (`window._battleship_demo_muted = true`) for other scripts to consult.
-
-Examples:
-
 ```
-http://localhost:8000/index.html?autoplay=1
-http://localhost:8000/index.html?autoplay=1&muted=1
+src/battleship.cpp    — game rules: board init, ship placement, shot resolution
+src/MLforAI.cpp       — AI scoring pipeline: scoreCell, chooseAIMove, heatmaps,
+                        placement enumeration, target tracking
+src/Tournament.cpp    — RoundState (one game) + Tournament (N games); per-player
+                        observation arrays so each AI only sees what it has shot at
+src/tuner.cpp         — CLI: grid-search sweep + online learning
+src/mc_cuda.cu        — CUDA Monte Carlo kernel (cuRAND + shared-memory atomics)
+src/mc_cuda_stub.cpp  — CPU stub; same interface, returns immediately
+src/wasm_exports.cpp  — extern "C" bridge for the browser build
+wargames.js           — canvas rendering, animation loop, UI controls
 ```
-
-When embedding the demo in an iframe (for example, from a portfolio page), include `?autoplay=1&muted=1` in the iframe `src` to load and autoplay safely.
-
